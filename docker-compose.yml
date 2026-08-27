@@ -1,0 +1,12 @@
+services:
+  agent-service:
+    build: .
+    ports:
+      - "127.0.0.1:8095:8095"
+    environment:
+      AGENT_SERVICE_BIND: "0.0.0.0:8095"
+      DATABASE_URL: "postgres://crowdrelay:password@host.docker.internal:5432/crowdrelay"
+      AGENT_SERVICE_AUTH_KEY: "test-key"
+    env_file:
+      - .env
+    restart: unless-stopped
