@@ -24,11 +24,16 @@ export function registerCredentialRoutes(
     pool: DbPool;
     authKey: string;
     encryptionKey: string;
+    googleOAuthConfigured: boolean;
   },
 ) {
   // List providers (no auth — provider catalog is static)
   app.get("/providers", async (_request, reply) => {
-    return reply.send({ providers: providerSummaries() });
+    const summaries = providerSummaries().map((p) => ({
+      ...p,
+      oauthAvailable: p.id === "google" ? opts.googleOAuthConfigured : false,
+    }));
+    return reply.send({ providers: summaries });
   });
 
   // List connected credentials for this workspace

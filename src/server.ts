@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     pool,
     authKey: config.authKey,
     encryptionKey: config.encryptionKey,
+    googleOAuthConfigured: !!(config.googleOAuthClientId && config.googleOAuthRedirectUri),
   });
 
   // OAuth routes (auth required for start, callback uses state token)
