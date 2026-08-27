@@ -128,9 +128,9 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     freeTier: true,
     models: [
-      { id: "claude-sonnet-5", name: "Claude Sonnet 5 (200K)", contextWindow: 200_000, bestFor: "General tasks, balanced reasoning", paid: false },
-      { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash (128K)", contextWindow: 128_000, bestFor: "Quick tasks, short content", paid: false },
-      { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free (200K)", contextWindow: 200_000, bestFor: "Reasoning-heavy tasks", paid: false },
+      { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free (128K)", contextWindow: 128_000, bestFor: "General tasks, balanced reasoning", paid: false },
+      { id: "mimo-v2.5-free", name: "MiMo v2.5 Free (32K)", contextWindow: 32_000, bestFor: "Quick tasks, short content", paid: false },
+      { id: "laguna-s-2.1-free", name: "Laguna S 2.1 Free (128K)", contextWindow: 128_000, bestFor: "Reasoning-heavy tasks", paid: false },
     ],
   },
   {
