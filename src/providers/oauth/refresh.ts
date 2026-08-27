@@ -55,7 +55,7 @@ export async function ensureFreshToken(
     throw new Error(`${providerId} credential unusable: ${message}`);
   };
 
-  if (cred.flavor === "api_key" || cred.flavor === "api_key_returned" || cred.flavor === "api_key") {
+  if (cred.flavor === "api_key" || cred.flavor === "api_key_returned") {
     if (!cred.apiKey) return fail("stored key is empty");
     return { provider: providerId, token: cred.apiKey, flavor: cred.flavor as TokenFlavor | "api_key", credential: cred };
   }
