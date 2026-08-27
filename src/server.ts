@@ -73,6 +73,19 @@ async function main(): Promise<void> {
   const port = parseInt(portStr, 10);
   await app.listen({ host, port });
   console.log(`crowdrelay-agents listening on ${config.bind}`);
+
+  // Graceful shutdown: drain in-flight requests, then close the DB pool.
+  // Without this, SIGTERM kills the process immediately — in-flight tasks
+  // are left in "running" forever (recovered by recoverStaleTasks on next boot,
+  // but that wastes the work already done).
+  const shutdown = async (signal: string) => {
+    console.log(`received ${signal}, shutting down gracefully`);
+    await app.close();
+    await pool.end();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 main().catch((err) => {

@@ -7,7 +7,12 @@ export function registerHealthRoutes(
   opts: { pool: DbPool },
 ) {
   app.get("/health", async (_request, reply) => {
-    return reply.send({ status: "ok", version: "0.1.0" });
+    try {
+      await opts.pool.query("SELECT 1");
+      return reply.send({ status: "ok", version: "0.1.0" });
+    } catch {
+      return reply.code(503).send({ status: "degraded", error: "database unreachable" });
+    }
   });
 
   app.get("/health/providers", async (_request, reply) => {

@@ -79,7 +79,7 @@ export async function callOpenAICompatible(params: CallParams): Promise<LlmRespo
   }
 
   return {
-    content,
+    content: content.length > 65_000 ? content.slice(0, 65_000) + "\n\n[truncated]" : content,
     tokensIn: data.usage?.prompt_tokens ?? null,
     tokensOut: data.usage?.completion_tokens ?? null,
     durationMs,

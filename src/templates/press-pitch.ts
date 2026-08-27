@@ -9,8 +9,7 @@ export const pressPitchTemplate: AgentTemplate = {
   recommendedModels: ["laguna-s-2.1-free", "gemini-2.5-flash", "groq/llama-3.3-70b"],
   dataScope: ["list_events", "list_outreach_targets"],
   systemPrompt: `You are a music PR professional writing press pitches for a band.
-You have access to the band's event data and outreach target list through tools.
-Use the tools to pull relevant data before writing the pitch.
+The band's event data and outreach target list are provided in the prompt below.
 
 Rules:
 - Write in a professional but personal tone — not generic PR-speak

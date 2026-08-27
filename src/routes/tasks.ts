@@ -8,7 +8,7 @@ import {
   getResult,
 } from "../store/tasks.js";
 import { findTemplate } from "../templates/catalog.js";
-import { findProvider, PROVIDERS } from "../providers/registry.js";
+import { PROVIDERS } from "../providers/registry.js";
 import { runTask } from "../agent/runner.js";
 import { getSuggestions } from "../agent/suggestions.js";
 import { extractWorkspaceId } from "../auth.js";
@@ -19,6 +19,44 @@ const createTaskSchema = z.object({
   prompt: z.string().min(1).max(8000),
   metadata: z.record(z.unknown()).optional().default({}),
 });
+
+// Per-workspace rate limit: max 5 concurrent running tasks, max 20 per hour.
+// Without this, a single client can exhaust the free Zen quota (100 req/day)
+// in seconds by spamming task creation.
+const runningTaskCount = new Map<string, number>();
+const taskTimestamps = new Map<string, number[]>();
+const MAX_CONCURRENT = 5;
+const MAX_PER_HOUR = 20;
+
+function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: string } {
+  const now = Date.now();
+  const hourAgo = now - 60 * 60 * 1000;
+
+  // Concurrent check
+  const running = runningTaskCount.get(workspaceId) ?? 0;
+  if (running >= MAX_CONCURRENT) {
+    return { allowed: false, reason: `too many concurrent tasks (max ${MAX_CONCURRENT})` };
+  }
+
+  // Hourly check
+  const timestamps = (taskTimestamps.get(workspaceId) ?? []).filter((t) => t > hourAgo);
+  if (timestamps.length >= MAX_PER_HOUR) {
+    return { allowed: false, reason: `rate limit exceeded (max ${MAX_PER_HOUR}/hour)` };
+  }
+
+  timestamps.push(now);
+  taskTimestamps.set(workspaceId, timestamps);
+  return { allowed: true };
+}
+
+function trackTaskStart(workspaceId: string): void {
+  runningTaskCount.set(workspaceId, (runningTaskCount.get(workspaceId) ?? 0) + 1);
+}
+
+function trackTaskEnd(workspaceId: string): void {
+  const current = runningTaskCount.get(workspaceId) ?? 0;
+  runningTaskCount.set(workspaceId, Math.max(0, current - 1));
+}
 
 export function registerTaskRoutes(
   app: FastifyInstance,
@@ -58,9 +96,15 @@ export function registerTaskRoutes(
       return reply.code(404).send({ error: `model '${model_id}' not found` });
     }
 
+    const rateLimit = checkRateLimit(workspaceId);
+    if (!rateLimit.allowed) {
+      return reply.code(429).send({ error: rateLimit.reason });
+    }
+
     const task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata);
 
     // Fire and forget — the task runs in the background
+    trackTaskStart(workspaceId);
     runTask({
       pool: opts.pool,
       taskId: task.id,
@@ -74,6 +118,8 @@ export function registerTaskRoutes(
       fallbackGroqKey: opts.fallbackGroqKey,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
+    }).finally(() => {
+      trackTaskEnd(workspaceId);
     });
 
     return reply.code(202).send(task);

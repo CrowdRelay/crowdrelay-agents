@@ -19,6 +19,15 @@ interface OAuthState {
 // this should be in Postgres or Redis. For now, single-instance is fine.
 const csrfStore = new Map<string, { workspaceId: string; provider: string; expires: number }>();
 
+// Periodic cleanup of expired tokens — without this, the Map grows unboundedly
+// if start is called but callback never arrives (user closes the tab).
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of csrfStore) {
+    if (now > entry.expires) csrfStore.delete(key);
+  }
+}, 5 * 60 * 1000).unref();
+
 function createCsrfToken(workspaceId: string, provider: string): string {
   const token = crypto.randomUUID();
   csrfStore.set(token, {
