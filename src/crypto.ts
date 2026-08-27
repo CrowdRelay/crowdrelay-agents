@@ -45,6 +45,24 @@ export function decrypt(ciphertext: string, masterKey: string): string {
 }
 
 /**
+ * Decrypts with key rotation support: tries the current key first, then the
+ * previous one. `rotated` tells the caller the value was sealed with the old
+ * key and should be re-encrypted with the current key on the next write.
+ */
+export function decryptWithRotation(
+  ciphertext: string,
+  masterKey: string,
+  previousKey: string | null,
+): { value: string; rotated: boolean } {
+  try {
+    return { value: decrypt(ciphertext, masterKey), rotated: false };
+  } catch (currentKeyError) {
+    if (!previousKey) throw currentKeyError;
+    return { value: decrypt(ciphertext, previousKey), rotated: true };
+  }
+}
+
+/**
  * Generates a random master key suitable for AGENT_SERVICE_ENCRYPTION_KEY.
  */
 export function generateMasterKey(): string {

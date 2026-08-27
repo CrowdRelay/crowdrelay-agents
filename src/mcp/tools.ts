@@ -1,5 +1,26 @@
 import type { DbPool } from "../store/db.js";
 
+/** Masks an email for LLM consumption: ab.cd@domain.tld → ab***@domain.tld.
+ *  The model never needs a raw address — the autopilot resolves recipients. */
+export function maskEmail(email: string | null): string | null {
+  if (!email || !email.includes("@")) return email;
+  const [local, domain] = email.split("@");
+  const prefix = local.slice(0, Math.min(2, local.length));
+  return `${prefix}***@${domain}`;
+}
+
+/** Masks emails in an arbitrary row object (mutates a copy). */
+function maskRowEmails<T extends Record<string, unknown>>(row: T, keys: string[] = ["contact_email"]): T {
+  const copy: Record<string, unknown> = { ...row };
+  for (const key of keys) {
+    const value = copy[key];
+    if (typeof value === "string") {
+      copy[key] = maskEmail(value) ?? value;
+    }
+  }
+  return copy as T;
+}
+
 /**
  * MCP tool definitions. Each tool is a read-only Postgres query scoped to
  * a single workspace_id. The LLM calls these during a session to pull
@@ -98,7 +119,9 @@ export const tools: McpTool[] = [
          LIMIT 50`,
         args,
       );
-      return rows;
+      // Emails are masked: the LLM references targets by id; the autopilot
+      // (never the model) resolves the real recipient at execution time.
+      return rows.map((row) => maskRowEmails(row as Record<string, unknown>));
     },
   },
   {
@@ -349,6 +372,133 @@ export const tools: McpTool[] = [
         ),
       ]);
       return { signal_coverage: coverage.rows, recent_engagements: engagements.rows };
+    },
+  },
+  {
+    name: "get_workspace_profile",
+    description:
+      "Workspace identity: name, slug, market locale hints from tenant settings. Use to match output language and tone.",
+    parameters: {},
+    async execute(pool, workspaceId) {
+      const { rows } = await pool.query(
+        `SELECT w.id, w.slug, w.name,
+                COALESCE(
+                  (SELECT jsonb_object_agg(key, value) FROM tenant_settings ts WHERE ts.workspace_id = w.id),
+                  '{}'::jsonb
+                ) AS settings
+         FROM workspaces w WHERE w.id = $1`,
+        [workspaceId],
+      );
+      return rows[0] ?? { error: "workspace not found" };
+    },
+  },
+  {
+    name: "get_opportunity_board",
+    description:
+      "Open autopilot decisions and actions awaiting operator attention: what the system is considering, with confidence and reasons. Use to align suggestions with existing plans instead of duplicating them.",
+    parameters: {},
+    async execute(pool, workspaceId) {
+      const [decisions, awaiting] = await Promise.all([
+        pool.query(
+          `SELECT decision_key, context, decision_kind, subject_kind,
+                  confidence_basis_points, disposition, reason, evaluated_at
+           FROM viryaos_autopilot_decisions
+           WHERE workspace_id = $1
+             AND disposition IN ('require_approval', 'recommend_only')
+             AND evaluated_at > now() - INTERVAL '14 days'
+           ORDER BY evaluated_at DESC
+           LIMIT 15`,
+          [workspaceId],
+        ),
+        pool.query(
+          `SELECT action_kind, subject_kind, status, created_at
+           FROM viryaos_autopilot_actions
+           WHERE workspace_id = $1 AND status = 'awaiting_approval'
+           ORDER BY created_at DESC
+           LIMIT 15`,
+          [workspaceId],
+        ),
+      ]);
+      return { open_decisions: decisions.rows, awaiting_approval: awaiting.rows };
+    },
+  },
+  {
+    name: "list_recent_action_outcomes",
+    description:
+      "What the autopilot executed recently and whether it worked: finished actions with status and last errors, from the last 30 days.",
+    parameters: {},
+    async execute(pool, workspaceId) {
+      const { rows } = await pool.query(
+        `SELECT action_kind, subject_kind, status, finished_at, last_error_kind, created_at
+         FROM viryaos_autopilot_actions
+         WHERE workspace_id = $1
+           AND status IN ('succeeded', 'failed')
+           AND finished_at > now() - INTERVAL '30 days'
+         ORDER BY finished_at DESC
+         LIMIT 10`,
+        [workspaceId],
+      );
+      return rows;
+    },
+  },
+  {
+    name: "get_agent_history",
+    description:
+      "Recent agent (LLM) task runs and what happened to their outcomes: template, model, status, and whether the outcome was processed or rejected. This is the feedback loop — study it to improve proposals.",
+    parameters: {
+      limit: {
+        type: "number",
+        description: "Max runs to return (default: 10, max: 20)",
+        required: false,
+      },
+    },
+    async execute(pool, workspaceId, params) {
+      const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+      const { rows } = await pool.query(
+        `SELECT t.template_id, t.model_id, t.status, t.created_at,
+                o.kind AS outcome_kind, o.status AS outcome_status,
+                o.confidence_basis_points, o.rejection_reason
+         FROM agent_service_tasks t
+         LEFT JOIN agent_outcomes o ON o.task_id = t.id AND o.workspace_id = t.workspace_id
+         WHERE t.workspace_id = $1
+         ORDER BY t.created_at DESC
+         LIMIT $2`,
+        [workspaceId, limit],
+      );
+      return rows;
+    },
+  },
+  {
+    name: "list_fan_segments",
+    description:
+      "Fan segments proposed by agents and accepted into the workspace: name, description, size estimate, criteria.",
+    parameters: {},
+    async execute(pool, workspaceId) {
+      const { rows } = await pool.query(
+        `SELECT name, description, size_estimate, criteria, created_at
+         FROM agent_fan_segments
+         WHERE workspace_id = $1
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [workspaceId],
+      );
+      return rows;
+    },
+  },
+  {
+    name: "list_release_campaigns",
+    description: "Active beacon release campaigns the band is currently pushing.",
+    parameters: {},
+    async execute(pool, workspaceId) {
+      const { rows } = await pool.query(
+        `SELECT id, title, status, created_at
+         FROM viryaos_beacon_release_campaigns
+         WHERE workspace_id = $1 AND status = 'active'
+         ORDER BY created_at DESC
+         LIMIT 10`,
+        [workspaceId],
+      );
+      return rows;
     },
   },
 ];

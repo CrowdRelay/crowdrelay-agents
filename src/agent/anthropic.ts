@@ -16,9 +16,16 @@ export async function callAnthropic(params: {
   modelId: string;
   systemPrompt: string;
   userPrompt: string;
+  /** Structured output: prefix a JSON-only instruction (portable floor —
+   *  tool-forced JSON varies by API version). */
+  jsonMode?: boolean;
 }): Promise<AnthropicResponse> {
-  const { apiKey, modelId, systemPrompt, userPrompt } = params;
+  const { apiKey, modelId, systemPrompt, userPrompt, jsonMode } = params;
   const startTime = Date.now();
+
+  const system = jsonMode
+    ? `${systemPrompt}\n\nCRITICAL: Respond with ONLY a single JSON object. No prose, no markdown fences.`
+    : systemPrompt;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -30,7 +37,7 @@ export async function callAnthropic(params: {
     body: JSON.stringify({
       model: modelId,
       max_tokens: 4096,
-      system: systemPrompt,
+      system,
       messages: [{ role: "user", content: userPrompt }],
     }),
     signal: AbortSignal.timeout(120_000),

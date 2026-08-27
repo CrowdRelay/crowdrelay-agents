@@ -4,10 +4,47 @@
  * - How to authenticate (api_key paste vs oauth)
  * - How to validate a credential
  * - Which LLM protocol it speaks (openai-compatible vs anthropic-native)
+ *
+ * OAuth flows come in three flavors (`tokenFlavor`):
+ * - "refresh_token"          — standard OAuth2, access token + refresh token
+ * - "api_key_returned"       — the exchange returns a long-lived API key
+ * - "short_lived_exchange"   — a stored user token is periodically exchanged
+ *                              for a short-lived service token (Copilot)
+ *
+ * `experimental: true` marks plan-quota flows that impersonate a first-party
+ * CLI client (Claude Code, Codex, Copilot). They are functional but
+ * ToS-gray: the UI labels them beta and an API key must always remain a
+ * viable alternative for the same provider.
  */
 
 export type AuthMethod = "api_key" | "oauth" | "none";
 export type LlmProtocol = "openai" | "anthropic" | "google";
+export type OAuthKind = "authorization_code_pkce" | "authorization_code" | "device_code";
+export type TokenFlavor = "refresh_token" | "api_key_returned" | "short_lived_exchange";
+
+export interface OAuthDef {
+  kind: OAuthKind;
+  authorizeUrl: string;
+  tokenUrl: string;
+  /** Env var holding this provider's client id — never a shared client. */
+  clientIdEnv: string;
+  clientSecretEnv?: string;
+  scopes: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  tokenFlavor: TokenFlavor;
+  /** CLI-mimic flows using the user's plan quota. Surfaced as beta in the UI. */
+  experimental?: boolean;
+}
+
+export interface ProviderModel {
+  id: string;
+  name: string;
+  contextWindow: number;
+  bestFor: string;
+  paid: boolean;
+  /** Approximate USD per million tokens. Absent = unknown (cost tracked as 0). */
+  pricing?: { inputPerMTokUsd: number; outputPerMTokUsd: number };
+}
 
 export interface ProviderDef {
   id: string;
@@ -18,18 +55,12 @@ export interface ProviderDef {
   models: ProviderModel[];
   /** For api_key providers: validate by making a test API call */
   validateApiKey?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
-  /** For oauth providers: the OAuth scopes needed */
+  /** For oauth providers: the full flow definition */
+  oauth?: OAuthDef;
+  /** Legacy field kept for frontend compat; oauth.scopes is authoritative. */
   oauthScopes?: string[];
   /** Whether this provider offers free models without any credential */
   freeTier?: boolean;
-}
-
-export interface ProviderModel {
-  id: string;
-  name: string;
-  contextWindow: number;
-  bestFor: string;
-  paid: boolean;
 }
 
 // --- Validation functions ---
@@ -152,43 +183,73 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "openai",
     name: "OpenAI",
-    description: "GPT-4o, GPT-4, o1, and more. Paste your API key from platform.openai.com.",
+    description:
+      "GPT-4o, GPT-4, o1, and more. Connect with an API key from platform.openai.com, or sign in with your ChatGPT plan (beta).",
     authMethod: "api_key",
     protocol: "openai",
     validateApiKey: validateOpenAI,
+    oauth: {
+      kind: "authorization_code_pkce",
+      authorizeUrl: "https://auth.openai.com/oauth/authorize",
+      tokenUrl: "https://auth.openai.com/oauth/token",
+      clientIdEnv: "OPENAI_OAUTH_CLIENT_ID",
+      scopes: ["openid", "profile", "email", "offline_access"],
+      tokenFlavor: "refresh_token",
+      experimental: true,
+    },
     models: [
-      { id: "gpt-4o", name: "GPT-4o (128K)", contextWindow: 128_000, bestFor: "Best overall, multimodal, fast", paid: true },
-      { id: "gpt-4o-mini", name: "GPT-4o Mini (128K)", contextWindow: 128_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true },
-      { id: "o1", name: "o1 (200K)", contextWindow: 200_000, bestFor: "Deep reasoning, complex analysis", paid: true },
-      { id: "o1-mini", name: "o1 Mini (128K)", contextWindow: 128_000, bestFor: "Reasoning at lower cost", paid: true },
+      { id: "gpt-4o", name: "GPT-4o (128K)", contextWindow: 128_000, bestFor: "Best overall, multimodal, fast", paid: true, pricing: { inputPerMTokUsd: 2.5, outputPerMTokUsd: 10 } },
+      { id: "gpt-4o-mini", name: "GPT-4o Mini (128K)", contextWindow: 128_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true, pricing: { inputPerMTokUsd: 0.15, outputPerMTokUsd: 0.6 } },
+      { id: "o1", name: "o1 (200K)", contextWindow: 200_000, bestFor: "Deep reasoning, complex analysis", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 60 } },
+      { id: "o1-mini", name: "o1 Mini (128K)", contextWindow: 128_000, bestFor: "Reasoning at lower cost", paid: true, pricing: { inputPerMTokUsd: 1.1, outputPerMTokUsd: 4.4 } },
     ],
   },
   {
     id: "anthropic",
     name: "Anthropic (Claude)",
-    description: "Claude 3.5 Sonnet, Opus, Haiku. Paste your API key from console.anthropic.com.",
+    description:
+      "Claude 3.5 Sonnet, Opus, Haiku. Connect with an API key from console.anthropic.com, or sign in with your Claude plan (beta).",
     authMethod: "api_key",
     protocol: "anthropic",
     validateApiKey: validateAnthropic,
+    oauth: {
+      kind: "authorization_code_pkce",
+      authorizeUrl: "https://claude.ai/api/oauth/authorize",
+      tokenUrl: "https://claude.ai/api/oauth/token",
+      clientIdEnv: "ANTHROPIC_OAUTH_CLIENT_ID",
+      scopes: ["user:inference"],
+      tokenFlavor: "refresh_token",
+      experimental: true,
+    },
     models: [
-      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true },
-      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku (200K)", contextWindow: 200_000, bestFor: "Fast and affordable, good for content", paid: true },
-      { id: "claude-3-opus-20240229", name: "Claude 3 Opus (200K)", contextWindow: 200_000, bestFor: "Most capable Claude, deep reasoning", paid: true },
+      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku (200K)", contextWindow: 200_000, bestFor: "Fast and affordable, good for content", paid: true, pricing: { inputPerMTokUsd: 0.8, outputPerMTokUsd: 4 } },
+      { id: "claude-3-opus-20240229", name: "Claude 3 Opus (200K)", contextWindow: 200_000, bestFor: "Most capable Claude, deep reasoning", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 75 } },
     ],
   },
   {
     id: "google",
     name: "Google (Gemini)",
     description: "Gemini 2.0 Flash, 1.5 Pro. Connect via OAuth or paste an API key from AI Studio.",
-    authMethod: "api_key", // oauth also supported, but api_key is the default
+    authMethod: "api_key",
     protocol: "openai", // Google exposes an OpenAI-compatible endpoint
     validateApiKey: validateGoogle,
+    oauth: {
+      kind: "authorization_code",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      clientIdEnv: "GOOGLE_OAUTH_CLIENT_ID",
+      clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
+      scopes: ["https://www.googleapis.com/auth/generative-language"],
+      extraAuthorizeParams: { access_type: "offline", prompt: "consent" },
+      tokenFlavor: "refresh_token",
+    },
     oauthScopes: ["https://www.googleapis.com/auth/generative-language"],
     models: [
-      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (1M)", contextWindow: 1_000_000, bestFor: "Very fast, huge context, multilingual", paid: true },
-      { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M)", contextWindow: 2_000_000, bestFor: "Largest context window, complex analysis", paid: true },
-      { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash (1M)", contextWindow: 1_000_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true },
-      { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash (1M)", contextWindow: 1_000_000, bestFor: "Latest flash, 250 req/day free tier", paid: false },
+      { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (1M)", contextWindow: 1_000_000, bestFor: "Very fast, huge context, multilingual", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
+      { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M)", contextWindow: 2_000_000, bestFor: "Largest context window, complex analysis", paid: true, pricing: { inputPerMTokUsd: 1.25, outputPerMTokUsd: 5 } },
+      { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash (1M)", contextWindow: 1_000_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true, pricing: { inputPerMTokUsd: 0.075, outputPerMTokUsd: 0.3 } },
+      { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash (1M)", contextWindow: 1_000_000, bestFor: "Latest flash, 250 req/day free tier", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
     ],
   },
   {
@@ -199,24 +260,33 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     validateApiKey: validateGroq,
     models: [
-      { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B (128K)", contextWindow: 128_000, bestFor: "Strong reasoning, fast inference", paid: false },
-      { id: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B (128K)", contextWindow: 128_000, bestFor: "Very fast, good multilingual", paid: false },
-      { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B (128K)", contextWindow: 128_000, bestFor: "Fast, lightweight tasks", paid: false },
+      { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B (128K)", contextWindow: 128_000, bestFor: "Strong reasoning, fast inference", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B (128K)", contextWindow: 128_000, bestFor: "Very fast, good multilingual", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B (128K)", contextWindow: 128_000, bestFor: "Fast, lightweight tasks", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
     ],
   },
   {
     id: "openrouter",
     name: "OpenRouter (All Models)",
-    description: "One API key unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Paste your key from openrouter.ai. You pay per-use through OpenRouter.",
-    authMethod: "api_key",
+    description:
+      "One connection unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Sign in with OpenRouter (official OAuth) or paste a key.",
+    authMethod: "oauth",
     protocol: "openai",
     validateApiKey: validateOpenRouter,
+    oauth: {
+      kind: "authorization_code_pkce",
+      authorizeUrl: "https://openrouter.ai/auth",
+      tokenUrl: "https://openrouter.ai/api/v1/auth/keys",
+      clientIdEnv: "OPENROUTER_OAUTH_CLIENT_ID",
+      scopes: [],
+      tokenFlavor: "api_key_returned",
+    },
     models: [
-      { id: "openai/gpt-4o", name: "GPT-4o via OpenRouter", contextWindow: 128_000, bestFor: "Best overall, accessed through OpenRouter", paid: true },
-      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true },
-      { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true },
-      { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B via OpenRouter", contextWindow: 128_000, bestFor: "Open-source via OpenRouter", paid: true },
-      { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true },
+      { id: "openai/gpt-4o", name: "GPT-4o via OpenRouter", contextWindow: 128_000, bestFor: "Best overall, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 2.75, outputPerMTokUsd: 11 } },
+      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
+      { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B via OpenRouter", contextWindow: 128_000, bestFor: "Open-source via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.12, outputPerMTokUsd: 0.3 } },
+      { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
     ],
   },
   {
@@ -227,15 +297,49 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     validateApiKey: validateXAI,
     models: [
-      { id: "grok-4.6", name: "Grok 4.6 (500K)", contextWindow: 500_000, bestFor: "Most intelligent Grok, code and chat", paid: true },
-      { id: "grok-4.5", name: "Grok 4.5 (500K)", contextWindow: 500_000, bestFor: "Strong reasoning, balanced cost", paid: true },
-      { id: "grok-4.3", name: "Grok 4.3 (1M)", contextWindow: 1_000_000, bestFor: "Largest context, cost-effective", paid: true },
+      { id: "grok-4.6", name: "Grok 4.6 (500K)", contextWindow: 500_000, bestFor: "Most intelligent Grok, code and chat", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "grok-4.5", name: "Grok 4.5 (500K)", contextWindow: 500_000, bestFor: "Strong reasoning, balanced cost", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "grok-4.3", name: "Grok 4.3 (1M)", contextWindow: 1_000_000, bestFor: "Largest context, cost-effective", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+    ],
+  },
+  {
+    id: "github-copilot",
+    name: "GitHub Copilot (beta)",
+    description:
+      "Use your Copilot subscription to run models like GPT-4o and Claude. Connect with your GitHub account (beta).",
+    authMethod: "oauth",
+    protocol: "openai",
+    oauth: {
+      kind: "device_code",
+      authorizeUrl: "https://github.com/login/device/code",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      clientIdEnv: "GITHUB_OAUTH_CLIENT_ID",
+      scopes: ["read:user"],
+      tokenFlavor: "short_lived_exchange",
+      experimental: true,
+    },
+    models: [
+      { id: "gpt-4o", name: "GPT-4o via Copilot", contextWindow: 128_000, bestFor: "Best overall through your Copilot plan", paid: false },
+      { id: "claude-3.5-sonnet", name: "Claude 3.5 Sonnet via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
+      { id: "gemini-2.0-flash-001", name: "Gemini 2.0 Flash via Copilot", contextWindow: 1_000_000, bestFor: "Huge context through your Copilot plan", paid: false },
     ],
   },
 ];
 
 export function findProvider(id: string): ProviderDef | undefined {
   return PROVIDERS.find((p) => p.id === id);
+}
+
+/**
+ * Approximate USD cost of a call, in micro-USD (1e-6). Unknown prices count
+ * as 0 but the usage row still records the request.
+ */
+export function estimateCostMicroUsd(model: ProviderModel, tokensIn: number, tokensOut: number): number {
+  if (!model.pricing) return 0;
+  const cost =
+    (tokensIn / 1_000_000) * model.pricing.inputPerMTokUsd +
+    (tokensOut / 1_000_000) * model.pricing.outputPerMTokUsd;
+  return Math.round(cost * 1_000_000);
 }
 
 /**
@@ -261,6 +365,8 @@ export function availableModels(connectedProviderIds: string[]): Array<ProviderM
 
 /**
  * Returns provider summaries for the frontend connection UI.
+ * `oauthAvailable` is filled in by the credentials route, which knows which
+ * OAuth clients this deployment has configured.
  */
 export function providerSummaries() {
   return PROVIDERS.map((p) => ({
@@ -270,6 +376,15 @@ export function providerSummaries() {
     authMethod: p.authMethod,
     freeTier: p.freeTier ?? false,
     modelCount: p.models.length,
-    oauthScopes: p.oauthScopes ?? [],
+    oauthScopes: p.oauth?.scopes ?? [],
+    oauth: p.oauth
+      ? {
+          kind: p.oauth.kind,
+          experimental: p.oauth.experimental ?? false,
+          scopes: p.oauth.scopes,
+          tokenFlavor: p.oauth.tokenFlavor,
+        }
+      : null,
+    supportsApiKeyPaste: typeof p.validateApiKey === "function",
   }));
 }

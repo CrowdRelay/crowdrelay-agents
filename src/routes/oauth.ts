@@ -1,53 +1,41 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { DbPool } from "../store/db.js";
-import { storeCredential } from "../store/credentials.js";
-import { extractWorkspaceId, AuthError } from "../auth.js";
+import { storeOAuthTokens } from "../store/credentials.js";
+import {
+  extractWorkspaceId,
+} from "../auth.js";
+import { findProvider } from "../providers/registry.js";
+import {
+  buildAuthorizeUrl,
+  createCodeVerifier,
+  exchangeCode,
+  exchangeCopilotToken,
+  fetchAccountLabel,
+  pollDeviceFlow,
+  startDeviceFlow,
+  OAuthFlowError,
+} from "../providers/oauth/flows.js";
+import {
+  configureOAuthClients,
+  oauthClientId,
+  oauthClientSecret,
+} from "../providers/oauth/refresh.js";
+import type { OAuthClientConfig } from "../config.js";
 
-interface OAuthConfig {
-  googleClientId: string | null;
-  googleClientSecret: string | null;
-  googleRedirectUri: string | null;
-}
+const startQuerySchema = z.object({
+  redirect_uri: z.string().url().optional(),
+  return_to: z.string().max(500).optional(),
+});
 
-interface OAuthState {
-  workspaceId: string;
-  csrf: string;
+interface OAuthStateRow {
+  state: string;
+  workspace_id: string;
   provider: string;
-}
-
-// In-memory CSRF store (short-lived). For production with multiple instances,
-// this should be in Postgres or Redis. For now, single-instance is fine.
-const csrfStore = new Map<string, { workspaceId: string; provider: string; expires: number }>();
-
-// Periodic cleanup of expired tokens — without this, the Map grows unboundedly
-// if start is called but callback never arrives (user closes the tab).
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of csrfStore) {
-    if (now > entry.expires) csrfStore.delete(key);
-  }
-}, 5 * 60 * 1000).unref();
-
-function createCsrfToken(workspaceId: string, provider: string): string {
-  const token = crypto.randomUUID();
-  csrfStore.set(token, {
-    workspaceId,
-    provider,
-    expires: Date.now() + 10 * 60 * 1000, // 10 minutes
-  });
-  return token;
-}
-
-function consumeCsrfToken(token: string): OAuthState | null {
-  const entry = csrfStore.get(token);
-  if (!entry) return null;
-  csrfStore.delete(token);
-  if (Date.now() > entry.expires) return null;
-  return {
-    workspaceId: entry.workspaceId,
-    csrf: token,
-    provider: entry.provider,
-  };
+  code_verifier: string | null;
+  redirect_uri: string | null;
+  device_code: string | null;
+  expires_at: Date;
 }
 
 export function registerOAuthRoutes(
@@ -56,99 +44,259 @@ export function registerOAuthRoutes(
     pool: DbPool;
     authKey: string;
     encryptionKey: string;
-    oauth: OAuthConfig;
+    oauthClients: Record<string, OAuthClientConfig>;
   },
 ) {
-  // Start Google OAuth flow — returns the URL to redirect the browser to
-  app.get("/oauth/google/start", async (request, reply) => {
-    let workspaceId: string;
-    try {
-      workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
-    } catch (err) {
-      return reply.code(401).send({ error: (err as Error).message });
-    }
+  configureOAuthClients(opts.oauthClients);
 
-    if (!opts.oauth.googleClientId || !opts.oauth.googleRedirectUri) {
-      return reply.code(503).send({ error: "Google OAuth is not configured" });
-    }
+  const STATE_TTL_MS = 10 * 60 * 1000;
+  const DEVICE_STATE_TTL_MS = 15 * 60 * 1000;
 
-    const csrfToken = createCsrfToken(workspaceId, "google");
-    const params = new URLSearchParams({
-      client_id: opts.oauth.googleClientId,
-      redirect_uri: opts.oauth.googleRedirectUri,
-      response_type: "code",
-      scope: "https://www.googleapis.com/auth/generative-language",
-      state: csrfToken,
-      access_type: "offline",
-      prompt: "consent",
-    });
-
-    return reply.send({
-      url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
-    });
-  });
-
-  // Handle Google OAuth callback — exchanges code for tokens, stores refresh token
-  app.get("/oauth/google/callback", async (request, reply) => {
-    const { code, state } = request.query as { code?: string; state?: string };
-
-    if (!code || !state) {
-      return reply.code(400).send({ error: "missing code or state parameter" });
-    }
-
-    const oauthState = consumeCsrfToken(state);
-    if (!oauthState) {
-      return reply.code(400).send({ error: "invalid or expired OAuth state" });
-    }
-
-    if (!opts.oauth.googleClientId || !opts.oauth.googleClientSecret || !opts.oauth.googleRedirectUri) {
-      return reply.code(503).send({ error: "Google OAuth is not configured" });
-    }
-
-    // Exchange authorization code for tokens
-    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: opts.oauth.googleClientId,
-        client_secret: opts.oauth.googleClientSecret,
-        redirect_uri: opts.oauth.googleRedirectUri,
-        grant_type: "authorization_code",
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      return reply.code(502).send({ error: `Google token exchange failed: ${errorText}` });
-    }
-
-    const tokens = (await tokenResponse.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    };
-
-    if (!tokens.refresh_token) {
-      return reply.code(400).send({
-        error: "Google did not return a refresh token. The user may have already authorized this app. Revoke access at https://myaccount.google.com/permissions and try again.",
-      });
-    }
-
-    // Store the refresh token encrypted
-    await storeCredential(
-      opts.pool,
-      oauthState.workspaceId,
-      "google",
-      "Google OAuth",
-      "oauth_refresh_token",
-      tokens.refresh_token,
-      opts.encryptionKey,
+  async function createStateRow(
+    workspaceId: string,
+    provider: string,
+    fields: { codeVerifier?: string; redirectUri?: string; deviceCode?: string; ttlMs?: number },
+  ): Promise<string> {
+    const state = crypto.randomUUID();
+    await opts.pool.query(
+      `INSERT INTO agent_service_oauth_states
+        (state, workspace_id, provider, code_verifier, redirect_uri, device_code, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        state,
+        workspaceId,
+        provider,
+        fields.codeVerifier ?? null,
+        fields.redirectUri ?? null,
+        fields.deviceCode ?? null,
+        new Date(Date.now() + (fields.ttlMs ?? STATE_TTL_MS)),
+      ],
     );
+    return state;
+  }
 
-    return reply.send({ success: true, provider: "google" });
-  });
+  async function takeStateRow(state: string): Promise<OAuthStateRow | null> {
+    // Single-use: delete on read. The row itself is the callback capability.
+    const { rows } = await opts.pool.query(
+      `DELETE FROM agent_service_oauth_states
+       WHERE state = $1
+       RETURNING state, workspace_id, provider, code_verifier, redirect_uri, device_code, expires_at`,
+      [state],
+    );
+    const row = rows[0] as OAuthStateRow | undefined;
+    if (!row) return null;
+    if (new Date(row.expires_at).getTime() < Date.now()) return null;
+    return row;
+  }
+
+  function providerConfigError(providerId: string): string | null {
+    const provider = findProvider(providerId);
+    if (!provider) return `provider '${providerId}' not found`;
+    if (!provider.oauth) return `${provider.name} does not support OAuth`;
+    if (!oauthClientId(providerId)) {
+      return `${provider.name} OAuth is not configured on this deployment`;
+    }
+    return null;
+  }
+
+  // --- Start a flow ---
+  app.get<{ Params: { provider: string }; Querystring: Record<string, unknown> }>(
+    "/oauth/:provider/start",
+    async (request, reply) => {
+      let workspaceId: string;
+      try {
+        workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
+      } catch (err) {
+        return reply.code(401).send({ error: (err as Error).message });
+      }
+
+      const providerId = request.params.provider;
+      const configError = providerConfigError(providerId);
+      if (configError) {
+        return reply.code(configError.includes("not found") ? 404 : 503).send({ error: configError });
+      }
+      const provider = findProvider(providerId)!;
+      const oauth = provider.oauth!;
+
+      const parsed = startQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "invalid query" });
+      }
+
+      try {
+        if (oauth.kind === "device_code") {
+          const started = await startDeviceFlow({ oauth, clientId: oauthClientId(providerId) });
+          const state = await createStateRow(workspaceId, providerId, {
+            deviceCode: started.deviceCode,
+            ttlMs: DEVICE_STATE_TTL_MS,
+          });
+          return reply.send({
+            mode: "device",
+            state,
+            user_code: started.userCode,
+            verification_uri: started.verificationUri,
+            interval_seconds: started.intervalSeconds,
+            expires_in: started.expiresInSeconds,
+          });
+        }
+
+        const redirectUri = parsed.data.redirect_uri;
+        if (!redirectUri) {
+          return reply.code(400).send({
+            error: "redirect_uri query parameter is required (the control plane's public callback URL)",
+          });
+        }
+        const codeVerifier = oauth.kind === "authorization_code_pkce" ? createCodeVerifier() : null;
+        const state = await createStateRow(workspaceId, providerId, {
+          codeVerifier: codeVerifier ?? undefined,
+          redirectUri,
+        });
+        const url = buildAuthorizeUrl({
+          oauth,
+          clientId: oauthClientId(providerId),
+          redirectUri,
+          state,
+          codeVerifier: codeVerifier ?? "",
+        });
+        return reply.send({ mode: "redirect", url, state });
+      } catch (err) {
+        if (err instanceof OAuthFlowError) {
+          return reply.code(502).send({ error: err.message, detail: err.detail });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // --- Callback (authorization-code flows) ---
+  // Auth note: the unguessable single-use state row is the capability here —
+  // the same pattern the control plane's CSRF design implies. The control
+  // plane proxy adds its derived token, but the flow must not depend on it.
+  app.get<{ Params: { provider: string }; Querystring: { code?: string; state?: string; error?: string } }>(
+    "/oauth/:provider/callback",
+    async (request, reply) => {
+      const { code, state, error } = request.query;
+      if (error) {
+        return reply.code(400).send({ error: `provider returned: ${error}` });
+      }
+      if (!code || !state) {
+        return reply.code(400).send({ error: "missing code or state parameter" });
+      }
+
+      const row = await takeStateRow(state);
+      if (!row) {
+        return reply.code(400).send({ error: "invalid or expired OAuth state" });
+      }
+      const configError = providerConfigError(row.provider);
+      if (configError) {
+        return reply.code(503).send({ error: configError });
+      }
+      const provider = findProvider(row.provider)!;
+      const oauth = provider.oauth!;
+      if (!row.redirect_uri) {
+        return reply.code(400).send({ error: "state row has no redirect_uri" });
+      }
+
+      try {
+        const tokens = await exchangeCode({
+          providerId: row.provider,
+          oauth,
+          clientId: oauthClientId(row.provider),
+          clientSecret: oauthClientSecret(row.provider),
+          code,
+          redirectUri: row.redirect_uri,
+          codeVerifier: row.code_verifier ?? "",
+        });
+        tokens.account =
+          tokens.account ?? (tokens.accessToken ? await fetchAccountLabel(row.provider, tokens.accessToken) : undefined);
+        await storeOAuthTokens(opts.pool, row.workspace_id, row.provider, tokens, opts.encryptionKey);
+        return reply.send({ success: true, provider: row.provider, return_to: null });
+      } catch (err) {
+        if (err instanceof OAuthFlowError) {
+          return reply.code(502).send({ error: err.message, detail: err.detail });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // --- Device-flow poll (frontend calls this every interval_seconds) ---
+  app.get<{ Params: { provider: string }; Querystring: { state?: string } }>(
+    "/oauth/:provider/poll",
+    async (request, reply) => {
+      let workspaceId: string;
+      try {
+        workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
+      } catch (err) {
+        return reply.code(401).send({ error: (err as Error).message });
+      }
+      const { state } = request.query;
+      if (!state) return reply.code(400).send({ error: "missing state parameter" });
+
+      const { rows } = await opts.pool.query(
+        `SELECT workspace_id, provider, device_code, expires_at
+         FROM agent_service_oauth_states WHERE state = $1`,
+        [state],
+      );
+      const row = rows[0] as
+        | { workspace_id: string; provider: string; device_code: string | null; expires_at: Date }
+        | undefined;
+      if (!row || row.workspace_id !== workspaceId) {
+        return reply.code(400).send({ error: "invalid OAuth state" });
+      }
+      if (new Date(row.expires_at).getTime() < Date.now()) {
+        await opts.pool.query(`DELETE FROM agent_service_oauth_states WHERE state = $1`, [state]);
+        return reply.code(410).send({ error: "device flow expired, start again" });
+      }
+      if (!row.device_code) return reply.code(400).send({ error: "state is not a device flow" });
+
+      const configError = providerConfigError(row.provider);
+      if (configError) return reply.code(503).send({ error: configError });
+
+      try {
+        const tokens = await pollDeviceFlow({
+          oauth: findProvider(row.provider)!.oauth!,
+          clientId: oauthClientId(row.provider),
+          deviceCode: row.device_code,
+        });
+        if (!tokens) {
+          return reply.send({ status: "pending" });
+        }
+        const account = tokens.accessToken
+          ? await fetchAccountLabel(row.provider, tokens.accessToken)
+          : undefined;
+        // Copilot's GHU from the device flow is not itself an inference
+        // token — exchange it for the short-lived Copilot API token now and
+        // store the GHU as the refresh side.
+        const finalTokens =
+          row.provider === "github-copilot" && tokens.accessToken
+            ? { ...(await exchangeCopilotToken(tokens.accessToken)), account }
+            : { ...tokens, account };
+        await storeOAuthTokens(
+          opts.pool,
+          row.workspace_id,
+          row.provider,
+          finalTokens,
+          opts.encryptionKey,
+        );
+        await opts.pool.query(`DELETE FROM agent_service_oauth_states WHERE state = $1`, [state]);
+        return reply.send({ status: "complete", provider: row.provider });
+      } catch (err) {
+        if (err instanceof OAuthFlowError) {
+          return reply.code(502).send({ error: err.message, detail: err.detail });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // Periodic cleanup of expired state rows (same hygiene as the old in-memory
+  // map, but now the store is durable and multi-instance safe).
+  setInterval(() => {
+    void opts.pool
+      .query(`DELETE FROM agent_service_oauth_states WHERE expires_at < now()`)
+      .catch((err) => console.error("oauth state cleanup failed:", err));
+  }, 5 * 60 * 1000).unref();
 }
 
-export { OAuthConfig };
+export { startQuerySchema };

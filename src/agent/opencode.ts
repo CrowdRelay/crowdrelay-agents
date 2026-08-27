@@ -21,10 +21,12 @@ interface CallParams {
   systemPrompt: string;
   userPrompt: string;
   tools?: unknown[];
+  /** Ask for guaranteed-JSON output (templates with structured outcomes). */
+  jsonMode?: boolean;
 }
 
 export async function callOpenAICompatible(params: CallParams): Promise<LlmResponse> {
-  const { endpoint, apiKey, modelId, systemPrompt, userPrompt, tools } = params;
+  const { endpoint, apiKey, modelId, systemPrompt, userPrompt, tools, jsonMode } = params;
   const startTime = Date.now();
 
   const body: Record<string, unknown> = {
@@ -41,6 +43,13 @@ export async function callOpenAICompatible(params: CallParams): Promise<LlmRespo
   if (tools && tools.length > 0) {
     body.tools = tools;
     body.tool_choice = "auto";
+  }
+
+  // json_object is the widest-supported structured floor: every
+  // OpenAI-compatible endpoint here accepts it or ignores it harmlessly.
+  // (json_schema strict mode is per-provider and flaky on compat layers.)
+  if (jsonMode) {
+    body.response_format = { type: "json_object" };
   }
 
   const response = await fetch(endpoint, {

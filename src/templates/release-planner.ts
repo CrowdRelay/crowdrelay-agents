@@ -7,7 +7,9 @@ export const releasePlannerTemplate: AgentTemplate = {
     "Plan a release campaign using the band's release plans, milestones, and beacon signal data. Generates a timeline with press, communication, and social media milestones.",
   category: "analysis",
   recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "grok-4.3"],
-  dataScope: ["release_plans", "beacon_signal_summary", "fan_stats"],
+  dataScope: ["release_plans", "beacon_signal_summary", "fan_stats", "list_release_campaigns", "get_opportunity_board"],
+  outputKind: "release_plan_note",
+  suggestedIntervalMinutes: 10080,
   systemPrompt: `You are a music release campaign planner. You create actionable release timelines using the band's data.
 
 Rules:
@@ -48,5 +50,5 @@ Rules:
       "5. **Risk flags** — anything that could delay or weaken the release",
     ].join("\n");
   },
-  outputFormat: "markdown",
+  outputFormat: "json",
 };

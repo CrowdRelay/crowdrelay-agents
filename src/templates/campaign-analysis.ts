@@ -7,7 +7,9 @@ export const campaignAnalysisTemplate: AgentTemplate = {
     "Analyze communication campaign performance and suggest improvements. Uses delivery stats, fan growth, and outreach data to identify what's working and what isn't.",
   category: "analysis",
   recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
-  dataScope: ["campaign_performance", "fan_stats", "list_outreach_targets"],
+  dataScope: ["campaign_performance", "fan_stats", "list_outreach_targets", "list_recent_action_outcomes"],
+  outputKind: "campaign_insight",
+  suggestedIntervalMinutes: 10080,
   systemPrompt: `You are a marketing analyst for a music band. You analyze campaign performance data and provide actionable insights.
 
 Rules:
@@ -47,5 +49,5 @@ Rules:
       "4. **Recommended actions** — 3-5 specific, actionable next steps",
     ].join("\n");
   },
-  outputFormat: "markdown",
+  outputFormat: "json",
 };

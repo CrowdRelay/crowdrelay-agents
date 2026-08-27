@@ -7,7 +7,8 @@ export const audienceResearchTemplate: AgentTemplate = {
     "Research and analyze audience growth using fan stats, merch sales, ticket data, and growth metrics. Identifies growth opportunities and suggests strategies.",
   category: "research",
   recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "grok-4.3"],
-  dataScope: ["fan_stats", "ticket_sales_summary", "list_merch_sales", "growth_metrics"],
+  dataScope: ["fan_stats", "ticket_sales_summary", "list_merch_sales", "growth_metrics", "list_fan_segments", "get_agent_history"],
+  outputKind: "audience_segments",
   systemPrompt: `You are an audience growth strategist for a music band. You analyze data to find growth opportunities and suggest practical strategies.
 
 Rules:
@@ -53,5 +54,5 @@ Rules:
       "5. **Data gaps** — what we should track but don't yet",
     ].join("\n");
   },
-  outputFormat: "markdown",
+  outputFormat: "json",
 };

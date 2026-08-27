@@ -9,6 +9,8 @@ import {
   getConnectedProviders,
 } from "../store/credentials.js";
 import { findProvider, providerSummaries, availableModels } from "../providers/registry.js";
+import { ensureFreshToken } from "../providers/oauth/refresh.js";
+import type { OAuthClientConfig } from "../config.js";
 import { decrypt } from "../crypto.js";
 import { extractWorkspaceId } from "../auth.js";
 
@@ -24,14 +26,15 @@ export function registerCredentialRoutes(
     pool: DbPool;
     authKey: string;
     encryptionKey: string;
-    googleOAuthConfigured: boolean;
+    previousEncryptionKey: string | null;
+    oauthClients: Record<string, OAuthClientConfig>;
   },
 ) {
   // List providers (no auth — provider catalog is static)
   app.get("/providers", async (_request, reply) => {
     const summaries = providerSummaries().map((p) => ({
       ...p,
-      oauthAvailable: p.id === "google" ? opts.googleOAuthConfigured : false,
+      oauthAvailable: Boolean(opts.oauthClients[p.id]),
     }));
     return reply.send({ providers: summaries });
   });
@@ -48,7 +51,9 @@ export function registerCredentialRoutes(
     return reply.send({ credentials });
   });
 
-  // Paste an API key and validate it
+  // Paste an API key and validate it. Allowed for every provider that ships a
+  // validator — including OAuth providers, where a pasted key is the
+  // deliberate fallback for plan-quota flows.
   app.post("/credentials", async (request, reply) => {
     let workspaceId: string;
     try {
@@ -70,16 +75,14 @@ export function registerCredentialRoutes(
     if (provider.authMethod === "none") {
       return reply.code(400).send({ error: `${provider.name} does not require an API key` });
     }
-    if (provider.authMethod === "oauth") {
-      return reply.code(400).send({ error: `${provider.name} requires OAuth, use the OAuth flow instead` });
+    if (!provider.validateApiKey) {
+      return reply.code(400).send({ error: `${provider.name} does not support API keys — use the connect flow` });
     }
 
     // Validate the key
-    if (provider.validateApiKey) {
-      const result = await provider.validateApiKey(api_key);
-      if (!result.valid) {
-        return reply.code(422).send({ error: result.error ?? "API key validation failed" });
-      }
+    const result = await provider.validateApiKey(api_key);
+    if (!result.valid) {
+      return reply.code(422).send({ error: result.error ?? "API key validation failed" });
     }
 
     // Store encrypted
@@ -115,7 +118,9 @@ export function registerCredentialRoutes(
     },
   );
 
-  // Re-validate an existing credential
+  // Re-validate an existing credential. API keys run the provider's test
+  // call; OAuth credentials force a token refresh, which fails loudly on a
+  // revoked grant.
   app.post<{ Params: { provider: string } }>(
     "/credentials/:provider/validate",
     async (request, reply) => {
@@ -127,32 +132,61 @@ export function registerCredentialRoutes(
       }
 
       const provider = findProvider(request.params.provider);
-      if (!provider || !provider.validateApiKey) {
+      if (!provider) {
+        return reply.code(404).send({ error: "provider not found" });
+      }
+
+      try {
+        if (provider.validateApiKey) {
+          // Load the encrypted key, decrypt, validate
+          const { rows } = await opts.pool.query(
+            `SELECT encrypted_value FROM agent_service_credentials
+             WHERE workspace_id = $1 AND provider = $2`,
+            [workspaceId, request.params.provider],
+          );
+          if (!rows[0]) {
+            return reply.code(404).send({ error: "credential not found" });
+          }
+
+          const apiKey = decrypt(rows[0].encrypted_value as string, opts.encryptionKey);
+          const result = await provider.validateApiKey(apiKey);
+
+          await updateCredentialStatus(
+            opts.pool,
+            workspaceId,
+            request.params.provider,
+            result.valid ? "active" : "invalid",
+            result.error ?? null,
+          );
+
+          return reply.send(result);
+        }
+
+        if (provider.oauth) {
+          await ensureFreshToken(
+            opts.pool,
+            workspaceId,
+            provider.id,
+            opts.encryptionKey,
+            opts.previousEncryptionKey,
+            { force: true },
+          );
+          await updateCredentialStatus(opts.pool, workspaceId, provider.id, "active", null);
+          return reply.send({ valid: true });
+        }
+
         return reply.code(400).send({ error: "provider does not support validation" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "validation failed";
+        await updateCredentialStatus(
+          opts.pool,
+          workspaceId,
+          request.params.provider,
+          "invalid",
+          message,
+        );
+        return reply.code(422).send({ valid: false, error: message });
       }
-
-      // Load the encrypted key, decrypt, validate
-      const { rows } = await opts.pool.query(
-        `SELECT encrypted_value FROM agent_service_credentials
-         WHERE workspace_id = $1 AND provider = $2`,
-        [workspaceId, request.params.provider],
-      );
-      if (!rows[0]) {
-        return reply.code(404).send({ error: "credential not found" });
-      }
-
-      const apiKey = decrypt(rows[0].encrypted_value as string, opts.encryptionKey);
-      const result = await provider.validateApiKey(apiKey);
-
-      await updateCredentialStatus(
-        opts.pool,
-        workspaceId,
-        request.params.provider,
-        result.valid ? "active" : "invalid",
-        result.error ?? null,
-      );
-
-      return reply.send(result);
     },
   );
 

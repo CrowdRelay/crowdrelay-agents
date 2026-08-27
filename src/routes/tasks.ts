@@ -8,15 +8,17 @@ import {
   getResult,
 } from "../store/tasks.js";
 import { findTemplate } from "../templates/catalog.js";
-import { PROVIDERS } from "../providers/registry.js";
+import { PROVIDERS, findProvider } from "../providers/registry.js";
 import { runTask } from "../agent/runner.js";
 import { getSuggestions } from "../agent/suggestions.js";
+import { checkBudgetForTask } from "../agent/usage.js";
 import { extractWorkspaceId } from "../auth.js";
 
 const createTaskSchema = z.object({
   template_id: z.string().min(1),
   model_id: z.string().min(1),
   prompt: z.string().min(1).max(8000),
+  suggestion_id: z.string().min(1).optional(),
   metadata: z.record(z.unknown()).optional().default({}),
 });
 
@@ -28,7 +30,7 @@ const taskTimestamps = new Map<string, number[]>();
 const MAX_CONCURRENT = 5;
 const MAX_PER_HOUR = 20;
 
-function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: string } {
+function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: string; stamp?: number } {
   const now = Date.now();
   const hourAgo = now - 60 * 60 * 1000;
 
@@ -44,9 +46,13 @@ function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: strin
     return { allowed: false, reason: `rate limit exceeded (max ${MAX_PER_HOUR}/hour)` };
   }
 
-  timestamps.push(now);
+  // Use a unique stamp so refundRateLimit removes exactly this entry, not
+  // whatever happens to be last when the refund runs (another concurrent
+  // request for the same workspace may have pushed its own stamp in between).
+  const stamp = now + Math.random();
+  timestamps.push(stamp);
   taskTimestamps.set(workspaceId, timestamps);
-  return { allowed: true };
+  return { allowed: true, stamp };
 }
 
 // Periodic cleanup of empty timestamp arrays — prevents the Map from growing
@@ -77,10 +83,12 @@ function trackTaskEnd(workspaceId: string): void {
   runningTaskCount.set(workspaceId, Math.max(0, current - 1));
 }
 
-function refundRateLimit(workspaceId: string): void {
+function refundRateLimit(workspaceId: string, stamp: number): void {
   const timestamps = taskTimestamps.get(workspaceId);
-  if (timestamps && timestamps.length > 0) {
-    timestamps.pop();
+  if (!timestamps) return;
+  const index = timestamps.lastIndexOf(stamp);
+  if (index >= 0) {
+    timestamps.splice(index, 1);
   }
 }
 
@@ -90,10 +98,14 @@ export function registerTaskRoutes(
     pool: DbPool;
     authKey: string;
     encryptionKey: string;
+    previousEncryptionKey: string | null;
     zenToken: string | null;
     fallbackGoogleKey: string | null;
     fallbackGroqKey: string | null;
+    outcomesEnabled: boolean;
+    defaultMonthlyBudgetMicroUsd: number;
     inFlightTasks: Set<Promise<void>>;
+    instanceId: string;
   },
 ) {
   app.post("/tasks", async (request, reply) => {
@@ -110,7 +122,25 @@ export function registerTaskRoutes(
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "invalid body" });
     }
 
-    const { template_id, model_id, prompt, metadata } = parsed.data;
+    let { template_id, model_id, prompt, metadata } = parsed.data;
+    const { suggestion_id } = parsed.data;
+
+    // suggestion_id resolves template + model + prefill from the suggestions
+    // engine — the operator never picks a model manually for a one-click run.
+    if (suggestion_id) {
+      const suggestions = await getSuggestions(opts.pool, workspaceId);
+      const suggestion = suggestions.find((s) => s.id === suggestion_id);
+      if (!suggestion) {
+        return reply.code(404).send({ error: `suggestion '${suggestion_id}' not found` });
+      }
+      template_id = suggestion.template_id;
+      model_id = suggestion.model_id;
+      // Operator prompt overrides the prefill; prefill is the fallback.
+      if (!prompt || prompt.trim().length === 0) {
+        prompt = suggestion.prefill_prompt;
+      }
+      metadata = { ...metadata, source: "suggestion", suggestion_id };
+    }
 
     const template = findTemplate(template_id);
     if (!template) {
@@ -123,17 +153,40 @@ export function registerTaskRoutes(
       return reply.code(404).send({ error: `model '${model_id}' not found` });
     }
 
+    // Budget pre-check — paid models are rejected when the monthly budget is
+    // exhausted. Free models always pass.
+    const provider = findProvider(PROVIDERS.find((p) => p.models.some((m) => m.id === model_id))?.id ?? "");
+    if (provider) {
+      const budget = await checkBudgetForTask(
+        opts.pool,
+        workspaceId,
+        provider.id,
+        model_id,
+        opts.defaultMonthlyBudgetMicroUsd,
+      );
+      if (!budget.allowed) {
+        return reply.code(429).send({
+          error: "budget_exhausted",
+          spent: budget.state.spentMonthMicroUsd,
+          limit: budget.state.limitMicroUsd,
+        });
+      }
+    }
+
     const rateLimit = checkRateLimit(workspaceId);
-    if (!rateLimit.allowed) {
+    if (!rateLimit.allowed || rateLimit.stamp === undefined) {
       return reply.code(429).send({ error: rateLimit.reason });
     }
+    const rateStamp = rateLimit.stamp;
 
     let task;
     try {
-      task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata);
+      task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata, opts.instanceId);
     } catch (err) {
-      // DB insert failed — refund the rate-limit slot so the client isn't penalised
-      refundRateLimit(workspaceId);
+      // DB insert failed — refund the exact rate-limit slot so the client
+      // isn't penalised. Pass the stamp to remove the right entry, not
+      // whatever happens to be last (another request may have pushed since).
+      refundRateLimit(workspaceId, rateStamp);
       throw err;
     }
 
@@ -147,9 +200,11 @@ export function registerTaskRoutes(
       modelId: model_id,
       prompt,
       encryptionKey: opts.encryptionKey,
+      previousEncryptionKey: opts.previousEncryptionKey,
       zenToken: opts.zenToken,
       fallbackGoogleKey: opts.fallbackGoogleKey,
       fallbackGroqKey: opts.fallbackGroqKey,
+      outcomesEnabled: opts.outcomesEnabled,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
     }).finally(() => {
@@ -170,7 +225,7 @@ export function registerTaskRoutes(
       return reply.code(statusCode).send({ error: (err as Error).message });
     }
 
-    const limit = Math.min(Number((request.query as { limit?: string }).limit) || 20, 100);
+    const limit = Math.max(1, Math.min(Number((request.query as { limit?: string }).limit) || 20, 100));
     const tasks = await listTasks(opts.pool, workspaceId, limit);
     return reply.send({ tasks });
   });
