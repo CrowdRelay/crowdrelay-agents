@@ -1,6 +1,6 @@
 import type { DbPool } from "../store/db.js";
 import type { AgentTemplate } from "../templates/catalog.js";
-import { findTool, toolDefinitions } from "../mcp/tools.js";
+import { findTool } from "../mcp/tools.js";
 import { findProvider, type ProviderDef, type ProviderModel } from "../providers/registry.js";
 import { getCredential, getConnectedProviders } from "../store/credentials.js";
 import { updateTaskStatus, saveResult } from "../store/tasks.js";
@@ -212,7 +212,9 @@ async function callLLM(
     modelId: model.id,
     systemPrompt,
     userPrompt,
-    tools: toolDefinitions(),
+    // Tools are not sent to the LLM — the MCP data is already seeded
+    // into the prompt by the template's dataScope + buildPrompt. Free
+    // Zen models reject tool-calling parameters with a 400 error.
   });
 }
 
