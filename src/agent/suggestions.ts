@@ -143,7 +143,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       suggestions.push({
         id: `press-${event.id}`,
         template_id: "press-pitch",
-        model_id: "nemotron-3.5-lightning-free",
+        model_id: "mimo-v2.5-free",
         title: `Press pitch for "${event.title}"`,
         description: `Event is in ${daysUntil} days (${new Date(event.starts_at).toLocaleDateString()}). ${event.interested_fans} interested, ${event.paid_buyers} paid. Write a press pitch targeting media outlets.`,
         prefill_prompt: `Write a press pitch for "${event.title}" on ${new Date(event.starts_at).toLocaleDateString()}. The event has ${event.interested_fans} interested fans and ${event.paid_buyers} paid ticket buyers. Target music media, blogs and zines in the event's market.`,
@@ -175,7 +175,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       suggestions.push({
         id: `recap-${event.id}`,
         template_id: "social-post",
-        model_id: "nemotron-3.5-lightning-free",
+        model_id: "mimo-v2.5-free",
         title: `Post-show recap for "${event.title}"`,
         description: `Event was ${daysSince} days ago with ${event.paid_buyers} paid attendees. Write a thank-you/recap post to keep engagement high.`,
         prefill_prompt: `Write a post-show recap and thank-you post for "${event.title}" that happened ${daysSince} days ago. ${event.paid_buyers} people attended. Create content that thanks attendees and keeps the momentum going — mention upcoming events if any.`,
@@ -190,7 +190,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "target-research",
       template_id: "press-pitch",
-      model_id: "nemotron-3.5-lightning-free",
+      model_id: "mimo-v2.5-free",
       title: "Expand outreach target list",
       description: `You have ${data.outreachTargets.active} active outreach targets. Research and identify new media outlets, blogs, and zines in your market to expand your reach.`,
       prefill_prompt: `Research and suggest new outreach targets for a metal/alternative band. We currently have ${data.outreachTargets.active} targets (${data.outreachTargets.by_kind.press} press, ${data.outreachTargets.by_kind.radio} radio, ${data.outreachTargets.by_kind.playlist} playlist). Suggest specific media outlets, blogs, zines, and radio stations that cover metal/alternative music in Central/Eastern Europe (Poland, Czech Republic, Germany).`,
@@ -204,7 +204,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "audience-analysis",
       template_id: "social-post",
-      model_id: "nemotron-3.5-lightning-free",
+      model_id: "mimo-v2.5-free",
       title: "Analyze recent fan growth",
       description: `${data.fanStats.new_30d} new fans in the last 30 days (${data.fanStats.total} total). Analyze where they're coming from and suggest ways to accelerate growth.`,
       prefill_prompt: `Analyze our fan growth: ${data.fanStats.total} total fans, ${data.fanStats.active} active, ${data.fanStats.new_30d} new in the last 30 days, ${data.fanStats.new_7d} new in the last 7 days. Suggest strategies to accelerate growth and improve fan engagement based on these numbers.`,
@@ -218,7 +218,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "campaign-review",
       template_id: "social-post",
-      model_id: "nemotron-3.5-lightning-free",
+      model_id: "mimo-v2.5-free",
       title: `Review ${data.campaigns.length} active campaign${data.campaigns.length > 1 ? "s" : ""}`,
       description: `You have ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}. Get a summary and suggestions for improvement.`,
       prefill_prompt: `Review our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.status})`).join(", ")}. Suggest improvements for engagement and reach.`,

@@ -50,7 +50,7 @@ export async function callOpenAICompatible(params: CallParams): Promise<LlmRespo
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(120_000),
   });
 
   if (!response.ok) {
