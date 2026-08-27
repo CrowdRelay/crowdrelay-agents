@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { MODELS } from "../agent/models.js";
 import type { DbPool } from "../store/db.js";
 
+const VERSION = process.env.npm_package_version ?? "unknown";
+
 export function registerHealthRoutes(
   app: FastifyInstance,
   opts: { pool: DbPool },
@@ -9,7 +11,7 @@ export function registerHealthRoutes(
   app.get("/health", async (_request, reply) => {
     try {
       await opts.pool.query("SELECT 1");
-      return reply.send({ status: "ok", version: "0.1.0" });
+      return reply.send({ status: "ok", version: VERSION });
     } catch {
       return reply.code(503).send({ status: "degraded", error: "database unreachable" });
     }

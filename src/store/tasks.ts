@@ -86,15 +86,17 @@ export async function updateTaskStatus(
 }
 
 /**
- * On startup, mark any tasks left "running" by a previous process as failed.
- * Without this, a container restart mid-task leaks the task forever — the
- * UI shows it as in-progress eternally and the operator cannot retry.
+ * On startup, mark any tasks left "running" or "queued" by a previous process
+ * as failed. Without this, a container restart mid-task leaks the task forever
+ * — the UI shows it as in-progress eternally and the operator cannot retry.
+ * "queued" is included because runTask is fire-and-forget: if the process dies
+ * between createTask and runTask, the task stays queued forever.
  */
 export async function recoverStaleTasks(pool: DbPool): Promise<number> {
   const { rowCount } = await pool.query(
     `UPDATE agent_service_tasks
      SET status = 'failed', completed_at = now(), error = 'process restarted mid-task'
-     WHERE status = 'running'`,
+     WHERE status IN ('running', 'queued')`,
   );
   return rowCount ?? 0;
 }

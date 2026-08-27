@@ -63,20 +63,3 @@ export const MODELS: ModelDef[] = [
 export function findModel(id: string): ModelDef | undefined {
   return MODELS.find((m) => m.id === id);
 }
-
-/**
- * Returns fallback chain for a model: the model itself, then all other
- * free models that don't require a key.
- */
-export function fallbackChain(modelId: string, availableKeys: { google?: boolean; groq?: boolean }): ModelDef[] {
-  const primary = findModel(modelId);
-  const chain: ModelDef[] = [];
-  if (primary) chain.push(primary);
-  for (const m of MODELS) {
-    if (m.id === modelId) continue;
-    if (m.requiresKey && m.provider === "google" && !availableKeys.google) continue;
-    if (m.requiresKey && m.provider === "groq" && !availableKeys.groq) continue;
-    chain.push(m);
-  }
-  return chain;
-}

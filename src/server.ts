@@ -9,6 +9,9 @@ import { registerCredentialRoutes } from "./routes/credentials.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
 import { recoverStaleTasks } from "./store/tasks.js";
 
+// Track in-flight background tasks so graceful shutdown can wait for them.
+const inFlightTasks = new Set<Promise<void>>();
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const pool: DbPool = createPool(config.databaseUrl);
@@ -67,6 +70,7 @@ async function main(): Promise<void> {
     zenToken: config.opencodeZenToken,
     fallbackGoogleKey: config.googleApiKey,
     fallbackGroqKey: config.groqApiKey,
+    inFlightTasks,
   });
 
   const [host, portStr] = config.bind.split(":");
@@ -74,13 +78,23 @@ async function main(): Promise<void> {
   await app.listen({ host, port });
   console.log(`crowdrelay-agents listening on ${config.bind}`);
 
-  // Graceful shutdown: drain in-flight requests, then close the DB pool.
-  // Without this, SIGTERM kills the process immediately — in-flight tasks
-  // are left in "running" forever (recovered by recoverStaleTasks on next boot,
-  // but that wastes the work already done).
+  // Graceful shutdown: drain HTTP requests, wait for in-flight tasks (up to
+  // 30s), then close the DB pool. Without this, SIGTERM kills the process
+  // immediately — in-flight tasks are left in "running" forever.
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return; // ignore duplicate signals
+    shuttingDown = true;
     console.log(`received ${signal}, shutting down gracefully`);
     await app.close();
+
+    if (inFlightTasks.size > 0) {
+      console.log(`waiting for ${inFlightTasks.size} in-flight task(s)…`);
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+      await Promise.race([Promise.allSettled([...inFlightTasks]), timeout]);
+      console.log(`in-flight tasks settled (${inFlightTasks.size} remaining)`);
+    }
+
     await pool.end();
     process.exit(0);
   };

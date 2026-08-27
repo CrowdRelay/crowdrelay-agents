@@ -1,7 +1,7 @@
 import type { DbPool } from "../store/db.js";
 import type { AgentTemplate } from "../templates/catalog.js";
 import { findTool } from "../mcp/tools.js";
-import { findProvider, type ProviderDef, type ProviderModel } from "../providers/registry.js";
+import { type ProviderDef, type ProviderModel } from "../providers/registry.js";
 import { getCredential, getConnectedProviders } from "../store/credentials.js";
 import { updateTaskStatus, saveResult } from "../store/tasks.js";
 import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
@@ -124,14 +124,17 @@ async function resolveModelChain(
     }
   }
 
-  // 2. Add fallback models from free tier + connected providers
+  // 2. Add fallback models — only free-tier models, to avoid burning paid quota
+  //    on a fallback attempt. Duplicates are skipped.
+  const seen = new Set(chain.map((c) => c.model.id));
   for (const provider of allProviders()) {
     // Skip the requested provider (already added above)
     if (requestedProvider?.id === provider.id) continue;
 
     for (const model of provider.models) {
-      // Skip paid models if no credential
-      if (model.paid && !connectedProviders.includes(provider.id) && !provider.freeTier) continue;
+      if (model.paid) continue; // only free models as fallback
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
 
       const apiKey = await resolveApiKey(provider, config, connectedProviders, encryptionKey);
       if (apiKey !== undefined) {

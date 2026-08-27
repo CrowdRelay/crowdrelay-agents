@@ -63,6 +63,8 @@ async function validateAnthropic(key: string): Promise<{ valid: boolean; error?:
         max_tokens: 1,
         messages: [{ role: "user", content: "hi" }],
       }),
+      // Note: if this model is retired, the 400/404 fallback below
+      // still treats it as "key is valid" — only 401 means bad key.
       signal: AbortSignal.timeout(10_000),
     });
     if (res.ok) return { valid: true };
@@ -165,7 +167,7 @@ export const PROVIDERS: ProviderDef[] = [
     name: "Google (Gemini)",
     description: "Gemini 2.0 Flash, 1.5 Pro. Connect via OAuth or paste an API key from AI Studio.",
     authMethod: "api_key", // oauth also supported, but api_key is the default
-    protocol: "google",
+    protocol: "openai", // Google exposes an OpenAI-compatible endpoint
     validateApiKey: validateGoogle,
     oauthScopes: ["https://www.googleapis.com/auth/generative-language"],
     models: [

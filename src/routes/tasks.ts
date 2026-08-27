@@ -49,6 +49,25 @@ function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: strin
   return { allowed: true };
 }
 
+// Periodic cleanup of empty timestamp arrays — prevents the Map from growing
+// unboundedly as new workspaces are seen over time.
+setInterval(() => {
+  const now = Date.now();
+  const hourAgo = now - 60 * 60 * 1000;
+  for (const [key, timestamps] of taskTimestamps) {
+    const fresh = timestamps.filter((t) => t > hourAgo);
+    if (fresh.length === 0) {
+      taskTimestamps.delete(key);
+    } else if (fresh.length !== timestamps.length) {
+      taskTimestamps.set(key, fresh);
+    }
+  }
+  // Also clean up zero-count running task entries
+  for (const [key, count] of runningTaskCount) {
+    if (count === 0) runningTaskCount.delete(key);
+  }
+}, 10 * 60 * 1000).unref();
+
 function trackTaskStart(workspaceId: string): void {
   runningTaskCount.set(workspaceId, (runningTaskCount.get(workspaceId) ?? 0) + 1);
 }
@@ -56,6 +75,13 @@ function trackTaskStart(workspaceId: string): void {
 function trackTaskEnd(workspaceId: string): void {
   const current = runningTaskCount.get(workspaceId) ?? 0;
   runningTaskCount.set(workspaceId, Math.max(0, current - 1));
+}
+
+function refundRateLimit(workspaceId: string): void {
+  const timestamps = taskTimestamps.get(workspaceId);
+  if (timestamps && timestamps.length > 0) {
+    timestamps.pop();
+  }
 }
 
 export function registerTaskRoutes(
@@ -67,6 +93,7 @@ export function registerTaskRoutes(
     zenToken: string | null;
     fallbackGoogleKey: string | null;
     fallbackGroqKey: string | null;
+    inFlightTasks: Set<Promise<void>>;
   },
 ) {
   app.post("/tasks", async (request, reply) => {
@@ -101,11 +128,18 @@ export function registerTaskRoutes(
       return reply.code(429).send({ error: rateLimit.reason });
     }
 
-    const task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata);
+    let task;
+    try {
+      task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata);
+    } catch (err) {
+      // DB insert failed — refund the rate-limit slot so the client isn't penalised
+      refundRateLimit(workspaceId);
+      throw err;
+    }
 
     // Fire and forget — the task runs in the background
     trackTaskStart(workspaceId);
-    runTask({
+    const taskPromise = runTask({
       pool: opts.pool,
       taskId: task.id,
       workspaceId,
@@ -121,6 +155,8 @@ export function registerTaskRoutes(
     }).finally(() => {
       trackTaskEnd(workspaceId);
     });
+    opts.inFlightTasks.add(taskPromise);
+    void taskPromise.finally(() => opts.inFlightTasks.delete(taskPromise));
 
     return reply.code(202).send(task);
   });
