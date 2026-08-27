@@ -147,24 +147,7 @@ export function registerOAuthRoutes(
       opts.encryptionKey,
     );
 
-    // Return a minimal HTML page that closes the popup or redirects.
-    // The browser was redirected here by Google, so a JSON response would
-    // render as raw text. This page auto-closes if opened as a popup,
-    // or shows a success message with a link back.
-    return reply.type("text/html").send(`<!DOCTYPE html>
-<html><head><title>Google connected</title><style>
-body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f9fafb}
-.card{background:#fff;padding:2rem 3rem;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.1);text-align:center}
-h1{color:#16a34a;font-size:1.25rem;margin:0 0 .5rem}
-p{color:#6b7280;margin:0 0 1rem;font-size:.875rem}
-a{color:#2563eb;text-decoration:none;font-size:.875rem}
-</style></head>
-<body><div class="card">
-<h1>Google connected</h1>
-<p>Your Google account is now linked to the agent service.</p>
-<script>try{window.close()}catch(e){}</script>
-<a href="javascript:window.close()">Close this window</a>
-</div></body></html>`);
+    return reply.send({ success: true, provider: "google" });
   });
 }
 
