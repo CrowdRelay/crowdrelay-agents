@@ -6,7 +6,7 @@ export const socialPostTemplate: AgentTemplate = {
   description:
     "Create social media posts from show and event data. Generates platform-appropriate content (Instagram, Facebook, X/Twitter) with hashtags and engagement hooks.",
   category: "content",
-  recommendedModels: ["laguna-s-2.1-free", "nemotron-3.5-lightning-free", "gemini-2.5-flash"],
+  recommendedModels: ["laguna-s-2.1-free", "nemotron-3.5-lightning-free", "gemini-3.6-flash"],
   dataScope: ["list_events", "fan_stats"],
   systemPrompt: `You are a social media manager for a metal/alternative band.
 The band's event data and fan statistics are provided in the prompt below.
