@@ -183,9 +183,11 @@ async function resolveApiKey(
     if (cred) return cred.decryptedValue;
   }
 
-  // Fall back to env-var keys (platform-level defaults)
-  if (provider.id === "google") return config.fallbackGoogleKey;
-  if (provider.id === "groq") return config.fallbackGroqKey;
+  // Fall back to env-var keys (platform-level defaults).
+  // Return undefined (not null) when the fallback is absent so the model
+  // chain skips this provider instead of attempting a keyless call.
+  if (provider.id === "google") return config.fallbackGoogleKey ?? undefined;
+  if (provider.id === "groq") return config.fallbackGroqKey ?? undefined;
 
   // No credential available — skip this provider
   return undefined;

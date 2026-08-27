@@ -154,16 +154,30 @@ export const tools: McpTool[] = [
     async execute(pool, workspaceId, params) {
       const rawLimit = Number(params.limit) || 20;
       const limit = Math.max(1, Math.min(rawLimit, 50));
+      // A merch order fact points at an inventory_reservations row, not a
+      // merch_variants row. The variant is reached through the
+      // inventory_reservation_items join table (one order can hold several
+      // variants, so we aggregate quantity and concatenate product names).
       const { rows } = await pool.query(
         `SELECT mof.id, mof.fulfillment_mode, mof.currency, mof.amount_gross_minor,
                 mof.goods_gross_minor, mof.shipping_gross_minor, mof.confirmed_at,
-                mp.name AS product_name, mv.name AS variant_name,
+                string_agg(DISTINCT mp.name, ', ') AS product_names,
+                string_agg(DISTINCT mv.label, ', ') AS variant_labels,
+                sum(item.quantity)::int AS total_quantity,
                 e.title AS event_title
          FROM merch_order_facts mof
-         LEFT JOIN merch_variants mv ON mv.id = mof.inventory_reservation_id
-         LEFT JOIN merch_products mp ON mp.id = mv.product_id
+         LEFT JOIN inventory_reservation_items item
+           ON item.workspace_id = mof.workspace_id
+          AND item.reservation_id = mof.inventory_reservation_id
+         LEFT JOIN merch_variants mv
+           ON mv.workspace_id = item.workspace_id AND mv.id = item.variant_id
+         LEFT JOIN merch_products mp
+           ON mp.workspace_id = mv.workspace_id AND mp.id = mv.product_id
          LEFT JOIN events e ON e.id = mof.event_id
          WHERE mof.workspace_id = $1
+         GROUP BY mof.id, mof.fulfillment_mode, mof.currency, mof.amount_gross_minor,
+                  mof.goods_gross_minor, mof.shipping_gross_minor, mof.confirmed_at,
+                  mof.created_at, e.title
          ORDER BY mof.created_at DESC
          LIMIT $2`,
         [workspaceId, limit],
