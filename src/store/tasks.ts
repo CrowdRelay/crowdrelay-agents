@@ -85,6 +85,20 @@ export async function updateTaskStatus(
   }
 }
 
+/**
+ * On startup, mark any tasks left "running" by a previous process as failed.
+ * Without this, a container restart mid-task leaks the task forever — the
+ * UI shows it as in-progress eternally and the operator cannot retry.
+ */
+export async function recoverStaleTasks(pool: DbPool): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE agent_service_tasks
+     SET status = 'failed', completed_at = now(), error = 'process restarted mid-task'
+     WHERE status = 'running'`,
+  );
+  return rowCount ?? 0;
+}
+
 export async function saveResult(
   pool: DbPool,
   taskId: string,

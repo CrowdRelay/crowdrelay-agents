@@ -7,6 +7,7 @@ import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerCredentialRoutes } from "./routes/credentials.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
+import { recoverStaleTasks } from "./store/tasks.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -15,6 +16,13 @@ async function main(): Promise<void> {
   // Run migrations on startup
   await runMigrations(pool);
   console.log("migrations complete");
+
+  // Mark tasks left "running" by a previous process as failed.
+  // Without this, a container restart mid-task leaks the task forever.
+  const recovered = await recoverStaleTasks(pool);
+  if (recovered > 0) {
+    console.log(`recovered ${recovered} stale task(s) left running by a previous process`);
+  }
 
   const app = Fastify({
     logger: true,
