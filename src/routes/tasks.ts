@@ -8,7 +8,7 @@ import {
   getResult,
 } from "../store/tasks";
 import { findTemplate } from "../templates/catalog";
-import { findModel } from "../agent/models";
+import { findProvider, PROVIDERS } from "../providers/registry";
 import { runTask } from "../agent/runner";
 import { extractWorkspaceId } from "../auth";
 
@@ -24,9 +24,10 @@ export function registerTaskRoutes(
   opts: {
     pool: DbPool;
     authKey: string;
-    availableKeys: { google?: boolean; groq?: boolean };
-    opencodeServerUrl: string | null;
+    encryptionKey: string;
     zenToken: string | null;
+    fallbackGoogleKey: string | null;
+    fallbackGroqKey: string | null;
   },
 ) {
   app.post("/tasks", async (request, reply) => {
@@ -50,8 +51,9 @@ export function registerTaskRoutes(
       return reply.code(404).send({ error: `template '${template_id}' not found` });
     }
 
-    const model = findModel(model_id);
-    if (!model) {
+    // Check if the model exists in any provider
+    const modelExists = PROVIDERS.some((p) => p.models.some((m) => m.id === model_id));
+    if (!modelExists) {
       return reply.code(404).send({ error: `model '${model_id}' not found` });
     }
 
@@ -65,9 +67,10 @@ export function registerTaskRoutes(
       template,
       modelId: model_id,
       prompt,
-      availableKeys: opts.availableKeys,
-      opencodeServerUrl: opts.opencodeServerUrl,
+      encryptionKey: opts.encryptionKey,
       zenToken: opts.zenToken,
+      fallbackGoogleKey: opts.fallbackGoogleKey,
+      fallbackGroqKey: opts.fallbackGroqKey,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
     });

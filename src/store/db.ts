@@ -60,6 +60,21 @@ export async function runMigrations(pool: DbPool): Promise<void> {
       latency_ms      INTEGER,
       UNIQUE (provider, model_id)
     )`,
+    `CREATE TABLE IF NOT EXISTS agent_service_credentials (
+      id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id          UUID NOT NULL,
+      provider              TEXT NOT NULL,
+      label                 TEXT NOT NULL DEFAULT '',
+      credential_type       TEXT NOT NULL,
+      encrypted_value       TEXT NOT NULL,
+      status                TEXT NOT NULL DEFAULT 'active',
+      last_validated_at     TIMESTAMPTZ,
+      last_validation_error TEXT,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (workspace_id, provider)
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_service_credentials_workspace_idx
+      ON agent_service_credentials (workspace_id)`,
   ];
 
   for (const sql of statements) {

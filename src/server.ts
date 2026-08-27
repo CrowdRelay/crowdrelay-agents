@@ -5,6 +5,8 @@ import { createPool, runMigrations, type DbPool } from "./store/db";
 import { registerTemplateRoutes } from "./routes/templates";
 import { registerTaskRoutes } from "./routes/tasks";
 import { registerHealthRoutes } from "./routes/health";
+import { registerCredentialRoutes } from "./routes/credentials";
+import { registerOAuthRoutes } from "./routes/oauth";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,11 +22,31 @@ async function main(): Promise<void> {
   });
 
   await app.register(cors, {
-    origin: true, // control plane proxies, so CORS is permissive
+    origin: true,
   });
 
   // Health routes (no auth — the control plane checks these)
   registerHealthRoutes(app, { pool });
+
+  // Provider catalog (no auth — static data)
+  // Credential routes (auth required)
+  registerCredentialRoutes(app, {
+    pool,
+    authKey: config.authKey,
+    encryptionKey: config.encryptionKey,
+  });
+
+  // OAuth routes (auth required for start, callback uses state token)
+  registerOAuthRoutes(app, {
+    pool,
+    authKey: config.authKey,
+    encryptionKey: config.encryptionKey,
+    oauth: {
+      googleClientId: config.googleOAuthClientId,
+      googleClientSecret: config.googleOAuthClientSecret,
+      googleRedirectUri: config.googleOAuthRedirectUri,
+    },
+  });
 
   // Template routes (auth required)
   registerTemplateRoutes(app, { authKey: config.authKey });
@@ -33,12 +55,10 @@ async function main(): Promise<void> {
   registerTaskRoutes(app, {
     pool,
     authKey: config.authKey,
-    availableKeys: {
-      google: !!config.googleApiKey,
-      groq: !!config.groqApiKey,
-    },
-    opencodeServerUrl: config.opencodeServerUrl,
+    encryptionKey: config.encryptionKey,
     zenToken: config.opencodeZenToken,
+    fallbackGoogleKey: config.googleApiKey,
+    fallbackGroqKey: config.groqApiKey,
   });
 
   const [host, portStr] = config.bind.split(":");

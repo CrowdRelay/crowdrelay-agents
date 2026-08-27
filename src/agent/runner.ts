@@ -1,9 +1,11 @@
 import type { DbPool } from "../store/db";
 import type { AgentTemplate } from "../templates/catalog";
 import { findTool, toolDefinitions } from "../mcp/tools";
-import { fallbackChain, type ModelDef } from "./models";
+import { findProvider, type ProviderDef, type ProviderModel } from "../providers/registry";
+import { getCredential, getConnectedProviders } from "../store/credentials";
 import { updateTaskStatus, saveResult } from "../store/tasks";
 import { callOpenAICompatible, type LlmResponse } from "./opencode";
+import { callAnthropic } from "./anthropic";
 
 export interface RunConfig {
   pool: DbPool;
@@ -12,17 +14,19 @@ export interface RunConfig {
   template: AgentTemplate;
   modelId: string;
   prompt: string;
-  availableKeys: { google?: boolean; groq?: boolean };
-  opencodeServerUrl: string | null;
+  encryptionKey: string;
   zenToken: string | null;
+  fallbackGoogleKey: string | null;
+  fallbackGroqKey: string | null;
 }
 
 /**
  * Orchestrates a single agent task:
  * 1. Pull tenant data via MCP tools (data scope from template)
  * 2. Build the full prompt from template + data + operator input
- * 3. Call the LLM (with fallback chain)
- * 4. Store the result
+ * 3. Resolve the model + credential (tenant-specific or free fallback)
+ * 4. Call the LLM (with fallback chain)
+ * 5. Store the result
  */
 export async function runTask(config: RunConfig): Promise<void> {
   const { pool, taskId, workspaceId, template, prompt } = config;
@@ -38,7 +42,6 @@ export async function runTask(config: RunConfig): Promise<void> {
       try {
         seededData[toolName] = await tool.execute(pool, workspaceId, {});
       } catch (err) {
-        // A failed tool call is not fatal — the LLM can still work with partial data
         console.error(`MCP tool ${toolName} failed:`, err);
         seededData[toolName] = { error: "data unavailable" };
       }
@@ -48,20 +51,20 @@ export async function runTask(config: RunConfig): Promise<void> {
     const systemPrompt = template.systemPrompt;
     const userPrompt = template.buildPrompt(prompt, seededData);
 
-    // 3. Call the LLM with fallback chain
-    const chain = fallbackChain(config.modelId, config.availableKeys);
+    // 3. Resolve model + credential
+    const modelChain = await resolveModelChain(config);
     let response: LlmResponse | null = null;
     let lastError: string | null = null;
     let modelUsed = "";
 
-    for (const model of chain) {
+    for (const { provider, model, apiKey } of modelChain) {
       try {
-        response = await callLLM(model, systemPrompt, userPrompt, config);
+        response = await callLLM(provider, model, apiKey, systemPrompt, userPrompt);
         modelUsed = model.id;
         break;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
-        console.error(`Model ${model.id} failed:`, lastError);
+        console.error(`Model ${model.id} (${provider.id}) failed:`, lastError);
         continue;
       }
     }
@@ -70,7 +73,7 @@ export async function runTask(config: RunConfig): Promise<void> {
       throw new Error(`All models failed. Last error: ${lastError}`);
     }
 
-    // 4. Store the result
+    // 5. Store the result
     await saveResult(pool, taskId, workspaceId, {
       content: response.content,
       format: template.outputFormat,
@@ -87,30 +90,120 @@ export async function runTask(config: RunConfig): Promise<void> {
   }
 }
 
-async function callLLM(
-  model: ModelDef,
-  systemPrompt: string,
-  userPrompt: string,
+/**
+ * Resolves the chain of (provider, model, apiKey) tuples to try.
+ * Priority:
+ * 1. The requested model — if the tenant has a credential for its provider, use it
+ * 2. Free-tier models (Zen, Groq free, Gemini free)
+ * 3. Other connected providers that have compatible models
+ */
+async function resolveModelChain(
   config: RunConfig,
-): Promise<LlmResponse> {
-  // For v1, we use a direct OpenAI-compatible API call.
-  // The OpenCode SDK server mode is an option for later — for now,
-  // we call the Zen endpoint directly (it's OpenAI-compatible).
+): Promise<Array<{ provider: ProviderDef; model: ProviderModel; apiKey: string | null }>> {
+  const { pool, workspaceId, modelId, encryptionKey } = config;
+  const chain: Array<{ provider: ProviderDef; model: ProviderModel; apiKey: string | null }> = [];
+  const connectedProviders = await getConnectedProviders(pool, workspaceId);
 
-  const endpoints: Record<string, string> = {
-    "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
-    google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
-    groq: "https://api.groq.com/openai/v1/chat/completions",
-  };
-
-  const endpoint = endpoints[model.provider];
-  if (!endpoint) {
-    throw new Error(`Unknown provider: ${model.provider}`);
+  // Search all providers for the requested model
+  let requestedProvider: ProviderDef | undefined;
+  let requestedModel: ProviderModel | undefined;
+  for (const provider of allProviders()) {
+    const model = provider.models.find((m) => m.id === modelId);
+    if (model) {
+      requestedProvider = provider;
+      requestedModel = model;
+      break;
+    }
   }
 
-  const apiKey = resolveApiKey(model, config);
-  if (model.requiresKey && !apiKey) {
-    throw new Error(`No API key for ${model.provider}`);
+  // 1. Try the requested model first
+  if (requestedProvider && requestedModel) {
+    const apiKey = await resolveApiKey(requestedProvider, config, connectedProviders, encryptionKey);
+    if (apiKey !== undefined) {
+      chain.push({ provider: requestedProvider, model: requestedModel, apiKey });
+    }
+  }
+
+  // 2. Add fallback models from free tier + connected providers
+  for (const provider of allProviders()) {
+    // Skip the requested provider (already added above)
+    if (requestedProvider?.id === provider.id) continue;
+
+    for (const model of provider.models) {
+      // Skip paid models if no credential
+      if (model.paid && !connectedProviders.includes(provider.id) && !provider.freeTier) continue;
+
+      const apiKey = await resolveApiKey(provider, config, connectedProviders, encryptionKey);
+      if (apiKey !== undefined) {
+        chain.push({ provider, model, apiKey });
+      }
+    }
+  }
+
+  return chain;
+}
+
+async function resolveApiKey(
+  provider: ProviderDef,
+  config: RunConfig,
+  connectedProviders: string[],
+  encryptionKey: string,
+): Promise<string | null | undefined> {
+  // Free tier — no key needed
+  if (provider.authMethod === "none" || provider.freeTier) {
+    if (provider.id === "opencode-zen") return config.zenToken;
+    return null;
+  }
+
+  // Check if tenant has a stored credential for this provider
+  if (connectedProviders.includes(provider.id)) {
+    const cred = await getCredential(config.pool, config.workspaceId, provider.id, encryptionKey);
+    if (cred) return cred.decryptedValue;
+  }
+
+  // Fall back to env-var keys (platform-level defaults)
+  if (provider.id === "google") return config.fallbackGoogleKey;
+  if (provider.id === "groq") return config.fallbackGroqKey;
+
+  // No credential available — skip this provider
+  return undefined;
+}
+
+async function callLLM(
+  provider: ProviderDef,
+  model: ProviderModel,
+  apiKey: string | null,
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<LlmResponse> {
+  if (provider.protocol === "anthropic") {
+    if (!apiKey) throw new Error("No API key for Anthropic");
+    const result = await callAnthropic({
+      apiKey,
+      modelId: model.id,
+      systemPrompt,
+      userPrompt,
+    });
+    return {
+      content: result.content,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      durationMs: result.durationMs,
+    };
+  }
+
+  // OpenAI-compatible (OpenAI, Groq, OpenRouter, Google's OpenAI endpoint, Zen)
+  const endpoints: Record<string, string> = {
+    "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
+    openai: "https://api.openai.com/v1/chat/completions",
+    google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
+    groq: "https://api.groq.com/openai/v1/chat/completions",
+    openrouter: "https://openrouter.ai/api/v1/chat/completions",
+  };
+
+  const endpoint = endpoints[provider.id];
+  if (!endpoint) {
+    throw new Error(`Unknown endpoint for provider: ${provider.id}`);
   }
 
   return callOpenAICompatible({
@@ -123,15 +216,9 @@ async function callLLM(
   });
 }
 
-function resolveApiKey(model: ModelDef, config: RunConfig): string | null {
-  if (model.provider === "opencode-zen") {
-    return config.zenToken;
-  }
-  if (model.provider === "google") {
-    return config.availableKeys.google ? process.env.GOOGLE_API_KEY ?? null : null;
-  }
-  if (model.provider === "groq") {
-    return config.availableKeys.groq ? process.env.GROQ_API_KEY ?? null : null;
-  }
-  return null;
+// Import all providers from the registry
+import { PROVIDERS } from "../providers/registry";
+
+function allProviders(): ProviderDef[] {
+  return PROVIDERS;
 }
