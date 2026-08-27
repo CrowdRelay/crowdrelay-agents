@@ -119,6 +119,20 @@ async function validateOpenRouter(key: string): Promise<{ valid: boolean; error?
   }
 }
 
+async function validateXAI(key: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const res = await fetch("https://api.x.ai/v1/models", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { valid: true };
+    if (res.status === 401) return { valid: false, error: "Invalid API key" };
+    return { valid: false, error: `xAI returned ${res.status}` };
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : "Connection failed" };
+  }
+}
+
 // --- Provider definitions ---
 
 export const PROVIDERS: ProviderDef[] = [
@@ -202,6 +216,20 @@ export const PROVIDERS: ProviderDef[] = [
       { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true },
       { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true },
       { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B via OpenRouter", contextWindow: 128_000, bestFor: "Open-source via OpenRouter", paid: true },
+      { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true },
+    ],
+  },
+  {
+    id: "xai",
+    name: "xAI (Grok)",
+    description: "Grok 4.6, 4.5, and 4.3. Paste your API key from console.x.ai. OpenAI-compatible endpoint.",
+    authMethod: "api_key",
+    protocol: "openai",
+    validateApiKey: validateXAI,
+    models: [
+      { id: "grok-4.6", name: "Grok 4.6 (500K)", contextWindow: 500_000, bestFor: "Most intelligent Grok, code and chat", paid: true },
+      { id: "grok-4.5", name: "Grok 4.5 (500K)", contextWindow: 500_000, bestFor: "Strong reasoning, balanced cost", paid: true },
+      { id: "grok-4.3", name: "Grok 4.3 (1M)", contextWindow: 1_000_000, bestFor: "Largest context, cost-effective", paid: true },
     ],
   },
 ];

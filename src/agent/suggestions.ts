@@ -217,13 +217,27 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
   if (data.campaigns.length > 0) {
     suggestions.push({
       id: "campaign-review",
-      template_id: "social-post",
+      template_id: "campaign-analysis",
       model_id: "laguna-s-2.1-free",
-      title: `Review ${data.campaigns.length} active campaign${data.campaigns.length > 1 ? "s" : ""}`,
-      description: `You have ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}. Get a summary and suggestions for improvement.`,
-      prefill_prompt: `Review our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.status})`).join(", ")}. Suggest improvements for engagement and reach.`,
+      title: `Analyze ${data.campaigns.length} active campaign${data.campaigns.length > 1 ? "s" : ""}`,
+      description: `You have ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}. Get a performance analysis with delivery rates, what's working, and what needs improvement.`,
+      prefill_prompt: `Analyze our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.status})`).join(", ")}. Identify what's working, what has high failure rates, and suggest specific improvements.`,
+      priority: "medium",
+      reason: `${data.campaigns.length} active campaigns — performance analysis opportunity`,
+    });
+  }
+
+  // 6. Fan growth → audience research (uses richer data now)
+  if (data.fanStats.new_30d > 5) {
+    suggestions.push({
+      id: "audience-deep-research",
+      template_id: "audience-research",
+      model_id: "laguna-s-2.1-free",
+      title: "Deep audience growth analysis",
+      description: `${data.fanStats.new_30d} new fans in 30 days. Get a deep analysis correlating fan growth with ticket sales, merch revenue, and autopilot-tracked growth metrics.`,
+      prefill_prompt: `Analyze our audience growth in depth. We have ${data.fanStats.total} total fans, ${data.fanStats.new_30d} new in the last 30 days. Correlate this with ticket sales, merch revenue, and growth metrics to find what's driving growth and what opportunities we're missing.`,
       priority: "low",
-      reason: `${data.campaigns.length} active campaigns running`,
+      reason: `${data.fanStats.new_30d} new fans in 30 days — deep analysis with revenue correlation`,
     });
   }
 

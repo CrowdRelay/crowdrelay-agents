@@ -1,5 +1,8 @@
 import { pressPitchTemplate } from "./press-pitch.js";
 import { socialPostTemplate } from "./social-post.js";
+import { campaignAnalysisTemplate } from "./campaign-analysis.js";
+import { releasePlannerTemplate } from "./release-planner.js";
+import { audienceResearchTemplate } from "./audience-research.js";
 
 export interface AgentTemplate {
   id: string;
@@ -17,6 +20,9 @@ export interface AgentTemplate {
 export const TEMPLATES: AgentTemplate[] = [
   pressPitchTemplate,
   socialPostTemplate,
+  campaignAnalysisTemplate,
+  releasePlannerTemplate,
+  audienceResearchTemplate,
 ];
 
 export function findTemplate(id: string): AgentTemplate | undefined {

@@ -14,6 +14,7 @@ const PROVIDER_ENDPOINTS: Record<string, string> = {
   google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
   groq: "https://api.groq.com/openai/v1/chat/completions",
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
+  xai: "https://api.x.ai/v1/chat/completions",
 };
 
 export interface RunConfig {
