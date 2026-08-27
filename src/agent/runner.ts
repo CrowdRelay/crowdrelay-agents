@@ -1,11 +1,20 @@
 import type { DbPool } from "../store/db.js";
 import type { AgentTemplate } from "../templates/catalog.js";
 import { findTool } from "../mcp/tools.js";
-import { type ProviderDef, type ProviderModel } from "../providers/registry.js";
+import { PROVIDERS, type ProviderDef, type ProviderModel } from "../providers/registry.js";
 import { getCredential, getConnectedProviders } from "../store/credentials.js";
 import { updateTaskStatus, saveResult } from "../store/tasks.js";
 import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
 import { callAnthropic } from "./anthropic.js";
+
+/** Static map of provider ID → OpenAI-compatible chat completions endpoint. */
+const PROVIDER_ENDPOINTS: Record<string, string> = {
+  "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
+  openai: "https://api.openai.com/v1/chat/completions",
+  google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
+  groq: "https://api.groq.com/openai/v1/chat/completions",
+  openrouter: "https://openrouter.ai/api/v1/chat/completions",
+};
 
 export interface RunConfig {
   pool: DbPool;
@@ -47,9 +56,18 @@ export async function runTask(config: RunConfig): Promise<void> {
       }
     }
 
-    // 2. Build the full prompt
+    // 2. Build the full prompt — cap the seeded data size to avoid blowing
+    //    the LLM context window or sending huge payloads. 32K chars is a
+    //    reasonable ceiling for the free-tier models (32K–128K context).
+    const MAX_SEEDED_CHARS = 32_000;
+    let seededJson = JSON.stringify(seededData);
+    if (seededJson.length > MAX_SEEDED_CHARS) {
+      seededJson = seededJson.slice(0, MAX_SEEDED_CHARS) + '\n\n[...truncated]';
+    }
+    const cappedData = JSON.parse(seededJson) as Record<string, unknown>;
+
     const systemPrompt = template.systemPrompt;
-    const userPrompt = template.buildPrompt(prompt, seededData);
+    const userPrompt = template.buildPrompt(prompt, cappedData);
 
     // 3. Resolve model + credential
     const modelChain = await resolveModelChain(config);
@@ -196,15 +214,7 @@ async function callLLM(
   }
 
   // OpenAI-compatible (OpenAI, Groq, OpenRouter, Google's OpenAI endpoint, Zen)
-  const endpoints: Record<string, string> = {
-    "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
-    openai: "https://api.openai.com/v1/chat/completions",
-    google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
-    groq: "https://api.groq.com/openai/v1/chat/completions",
-    openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  };
-
-  const endpoint = endpoints[provider.id];
+  const endpoint = PROVIDER_ENDPOINTS[provider.id];
   if (!endpoint) {
     throw new Error(`Unknown endpoint for provider: ${provider.id}`);
   }
@@ -221,9 +231,7 @@ async function callLLM(
   });
 }
 
-// Import all providers from the registry
-import { PROVIDERS } from "../providers/registry.js";
-
+// Provider catalog — imported at the top with other dependencies.
 function allProviders(): ProviderDef[] {
   return PROVIDERS;
 }

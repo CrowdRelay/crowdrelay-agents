@@ -49,6 +49,8 @@ export async function runMigrations(pool: DbPool): Promise<void> {
     )`,
     `CREATE INDEX IF NOT EXISTS agent_service_results_task_idx
       ON agent_service_results (task_id)`,
+    `CREATE INDEX IF NOT EXISTS agent_service_results_workspace_idx
+      ON agent_service_results (workspace_id)`,
     `CREATE TABLE IF NOT EXISTS agent_service_provider_health (
       id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       provider        TEXT NOT NULL,

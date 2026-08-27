@@ -32,7 +32,8 @@ export const tools: McpTool[] = [
     },
     async execute(pool, workspaceId, params) {
       const status = (params.status as string) ?? "published";
-      const limit = Math.min((params.limit as number) ?? 10, 50);
+      const rawLimit = Number(params.limit) || 10;
+      const limit = Math.max(1, Math.min(rawLimit, 50));
       const validStatuses = ["published", "completed", "all"];
       const safeStatus = validStatuses.includes(status) ? status : "published";
       const statusFilter = safeStatus === "all" ? "IN ('published','completed')" : "= $2";
@@ -73,7 +74,9 @@ export const tools: McpTool[] = [
       },
     },
     async execute(pool, workspaceId, params) {
-      const kind = params.kind as string | undefined;
+      const rawKind = params.kind as string | undefined;
+      const validKinds = ["press", "radio", "playlist", "media_patronage", "endorsement", "creator", "all"];
+      const kind = rawKind && validKinds.includes(rawKind) ? rawKind : undefined;
       const activeOnly = (params.active_only as boolean) ?? true;
       const conditions = ["workspace_id = $1"];
       const args: unknown[] = [workspaceId];
