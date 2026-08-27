@@ -1,17 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { DbPool } from "../store/db";
+import type { DbPool } from "../store/db.js";
 import {
   createTask,
   getTask,
   listTasks,
   getResult,
-} from "../store/tasks";
-import { findTemplate } from "../templates/catalog";
-import { findProvider, PROVIDERS } from "../providers/registry";
-import { runTask } from "../agent/runner";
-import { getSuggestions } from "../agent/suggestions";
-import { extractWorkspaceId } from "../auth";
+} from "../store/tasks.js";
+import { findTemplate } from "../templates/catalog.js";
+import { findProvider, PROVIDERS } from "../providers/registry.js";
+import { runTask } from "../agent/runner.js";
+import { getSuggestions } from "../agent/suggestions.js";
+import { extractWorkspaceId } from "../auth.js";
 
 const createTaskSchema = z.object({
   template_id: z.string().min(1),

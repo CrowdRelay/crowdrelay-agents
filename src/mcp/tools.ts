@@ -1,4 +1,4 @@
-import type { DbPool } from "../store/db";
+import type { DbPool } from "../store/db.js";
 
 /**
  * MCP tool definitions. Each tool is a read-only Postgres query scoped to
@@ -33,19 +33,25 @@ export const tools: McpTool[] = [
     async execute(pool, workspaceId, params) {
       const status = (params.status as string) ?? "published";
       const limit = Math.min((params.limit as number) ?? 10, 50);
-      const filter = status === "all" ? "IN ('published','completed')" : `= '${status}'`;
+      const validStatuses = ["published", "completed", "all"];
+      const safeStatus = validStatuses.includes(status) ? status : "published";
+      const statusFilter = safeStatus === "all" ? "IN ('published','completed')" : "= $2";
+      const args: unknown[] = [workspaceId];
+      if (safeStatus !== "all") args.push(safeStatus);
+      args.push(limit);
+      const limitParam = `$${args.length}`;
       const { rows } = await pool.query(
         `SELECT e.id, e.title, e.slug, e.starts_at, e.status,
                 (SELECT count(*)::int FROM event_interests ei WHERE ei.event_id = e.id) AS interested_fans,
-                (SELECT count(DISTINCT to.buyer_email)::int
-                 FROM ticket_orders to
-                 JOIN ticket_sales ts ON ts.id = to.ticket_sale_id
-                 WHERE ts.event_id = e.id AND to.status IN ('paid','partially_refunded')) AS paid_buyers
+                (SELECT count(DISTINCT tord.buyer_email)::int
+                 FROM ticket_orders AS tord
+                 JOIN ticket_sales ts ON ts.id = tord.ticket_sale_id
+                 WHERE ts.event_id = e.id AND tord.status IN ('paid','partially_refunded')) AS paid_buyers
          FROM events e
-         WHERE e.workspace_id = $1 AND e.status ${filter}
+         WHERE e.workspace_id = $1 AND e.status ${statusFilter}
          ORDER BY e.starts_at DESC
-         LIMIT $2`,
-        [workspaceId, limit],
+         LIMIT ${limitParam}`,
+        args,
       );
       return rows;
     },

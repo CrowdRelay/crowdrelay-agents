@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { templateSummaries, findTemplate } from "../templates/catalog";
+import { templateSummaries, findTemplate } from "../templates/catalog.js";
 
 export function registerTemplateRoutes(app: FastifyInstance, opts: { authKey: string }) {
   app.get("/templates", async (request, reply) => {

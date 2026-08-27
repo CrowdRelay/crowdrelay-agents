@@ -1,16 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { DbPool } from "../store/db";
+import type { DbPool } from "../store/db.js";
 import {
   storeCredential,
   listCredentials,
   deleteCredential,
   updateCredentialStatus,
   getConnectedProviders,
-} from "../store/credentials";
-import { findProvider, providerSummaries, availableModels } from "../providers/registry";
-import { decrypt } from "../crypto";
-import { extractWorkspaceId } from "../auth";
+} from "../store/credentials.js";
+import { findProvider, providerSummaries, availableModels } from "../providers/registry.js";
+import { decrypt } from "../crypto.js";
+import { extractWorkspaceId } from "../auth.js";
 
 const pasteKeySchema = z.object({
   provider: z.string().min(1),

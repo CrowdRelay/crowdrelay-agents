@@ -1,4 +1,4 @@
-import type { AgentTemplate } from "./catalog";
+import type { AgentTemplate } from "./catalog.js";
 
 export const pressPitchTemplate: AgentTemplate = {
   id: "press-pitch",

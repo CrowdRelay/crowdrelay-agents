@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { DbPool } from "../store/db";
-import { storeCredential } from "../store/credentials";
-import { extractWorkspaceId, AuthError } from "../auth";
+import type { DbPool } from "../store/db.js";
+import { storeCredential } from "../store/credentials.js";
+import { extractWorkspaceId, AuthError } from "../auth.js";
 
 interface OAuthConfig {
   googleClientId: string | null;

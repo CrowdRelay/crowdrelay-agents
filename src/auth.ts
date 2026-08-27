@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-const NAMESPACE = "crowdrelay-agent-service-v1:";
+const NAMESPACE = "crowdrelay-control-plane-v1:";
 
 /**
  * Derives an HMAC-SHA256 token for a workspace, matching the control plane's

@@ -1,0 +1,63 @@
+# Agent service production compose — deploy alongside the control plane.
+#
+# This file is an overlay for the control plane stack. Deploy with:
+#   docker compose -f compose.production.yml -f compose.area.yml -f compose.agents.yml up -d
+#
+# The agent service joins the control plane's internal network (so the
+# control plane can reach it at http://agent-service:8095) and the
+# crowdrelay-shared network (so it can query the crowdrelay Postgres).
+#
+# Required env vars (add to /srv/crowdrelay-control-plane/.env):
+#   AGENT_SERVICE_AUTH_KEY — must match CONTROL_PLANE_MANAGEMENT_MASTER_KEY
+#   AGENT_SERVICE_ENCRYPTION_KEY — 64 hex chars (generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+#   CROWDRELAY_DB_PASSWORD — the crowdrelay postgres password
+#
+# Optional env vars:
+#   OPENCODE_ZEN_TOKEN — free LLM token
+#   GOOGLE_API_KEY — platform-level Google fallback
+#   GROQ_API_KEY — platform-level Groq fallback
+#   GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / GOOGLE_OAUTH_REDIRECT_URI — Google OAuth
+
+services:
+  agent-service:
+    image: crowdrelay-agents:${AGENT_SERVICE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      AGENT_SERVICE_BIND: "0.0.0.0:8095"
+      DATABASE_URL: "postgres://crowdrelay:${CROWDRELAY_DB_PASSWORD}@crowdrelay-db:5432/crowdrelay"
+      AGENT_SERVICE_AUTH_KEY: "${AGENT_SERVICE_AUTH_KEY:?AGENT_SERVICE_AUTH_KEY required}"
+      AGENT_SERVICE_ENCRYPTION_KEY: "${AGENT_SERVICE_ENCRYPTION_KEY:?AGENT_SERVICE_ENCRYPTION_KEY required}"
+      OPENCODE_ZEN_TOKEN: "${OPENCODE_ZEN_TOKEN:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GOOGLE_OAUTH_CLIENT_ID: "${GOOGLE_OAUTH_CLIENT_ID:-}"
+      GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET:-}"
+      GOOGLE_OAUTH_REDIRECT_URI: "${GOOGLE_OAUTH_REDIRECT_URI:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8095/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    mem_limit: 128m
+    cpus: 0.25
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+      - crowdrelay-shared
+
+  app:
+    environment:
+      CONTROL_PLANE_AGENT_SERVICE_URL: "http://agent-service:8095"
+
+networks:
+  crowdrelay-shared:
+    external: true
+    name: crowdrelay-shared

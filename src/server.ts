@@ -1,12 +1,12 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { loadConfig } from "./config";
-import { createPool, runMigrations, type DbPool } from "./store/db";
-import { registerTemplateRoutes } from "./routes/templates";
-import { registerTaskRoutes } from "./routes/tasks";
-import { registerHealthRoutes } from "./routes/health";
-import { registerCredentialRoutes } from "./routes/credentials";
-import { registerOAuthRoutes } from "./routes/oauth";
+import { loadConfig } from "./config.js";
+import { createPool, runMigrations, type DbPool } from "./store/db.js";
+import { registerTemplateRoutes } from "./routes/templates.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerHealthRoutes } from "./routes/health.js";
+import { registerCredentialRoutes } from "./routes/credentials.js";
+import { registerOAuthRoutes } from "./routes/oauth.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();

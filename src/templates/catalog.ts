@@ -1,5 +1,5 @@
-import { pressPitchTemplate } from "./press-pitch";
-import { socialPostTemplate } from "./social-post";
+import { pressPitchTemplate } from "./press-pitch.js";
+import { socialPostTemplate } from "./social-post.js";
 
 export interface AgentTemplate {
   id: string;

@@ -5,7 +5,7 @@
  * click to run.
  */
 
-import type { DbPool } from "../store/db.ts";
+import type { DbPool } from "../store/db.js";
 
 export interface TaskSuggestion {
   id: string;
@@ -49,7 +49,6 @@ interface TenantData {
     id: string;
     title: string;
     status: string;
-    phase: string;
   }>;
 }
 
@@ -58,10 +57,10 @@ async function loadTenantData(pool: DbPool, workspaceId: string): Promise<Tenant
     pool.query(
       `SELECT e.id, e.title, e.starts_at, e.status,
               (SELECT count(*)::int FROM event_interests ei WHERE ei.event_id = e.id) AS interested_fans,
-              (SELECT count(DISTINCT to.buyer_email)::int
-               FROM ticket_orders to
-               JOIN ticket_sales ts ON ts.id = to.ticket_sale_id
-               WHERE ts.event_id = e.id AND to.status IN ('paid','partially_refunded')) AS paid_buyers
+              (SELECT count(DISTINCT tord.buyer_email)::int
+               FROM ticket_orders AS tord
+               JOIN ticket_sales ts ON ts.id = tord.ticket_sale_id
+               WHERE ts.event_id = e.id AND tord.status IN ('paid','partially_refunded')) AS paid_buyers
        FROM events e
        WHERE e.workspace_id = $1 AND e.status = 'published' AND e.starts_at > now()
        ORDER BY e.starts_at ASC LIMIT 10`,
@@ -70,10 +69,10 @@ async function loadTenantData(pool: DbPool, workspaceId: string): Promise<Tenant
     pool.query(
       `SELECT e.id, e.title, e.starts_at,
               (SELECT count(*)::int FROM event_interests ei WHERE ei.event_id = e.id) AS interested_fans,
-              (SELECT count(DISTINCT to.buyer_email)::int
-               FROM ticket_orders to
-               JOIN ticket_sales ts ON ts.id = to.ticket_sale_id
-               WHERE ts.event_id = e.id AND to.status IN ('paid','partially_refunded')) AS paid_buyers
+              (SELECT count(DISTINCT tord.buyer_email)::int
+               FROM ticket_orders AS tord
+               JOIN ticket_sales ts ON ts.id = tord.ticket_sale_id
+               WHERE ts.event_id = e.id AND tord.status IN ('paid','partially_refunded')) AS paid_buyers
        FROM events e
        WHERE e.workspace_id = $1 AND e.status = 'completed' AND e.starts_at > now() - INTERVAL '90 days'
        ORDER BY e.starts_at DESC LIMIT 5`,
@@ -99,7 +98,7 @@ async function loadTenantData(pool: DbPool, workspaceId: string): Promise<Tenant
       [workspaceId],
     ),
     pool.query(
-      `SELECT id, title, status, phase
+      `SELECT id, title, status
        FROM viryaos_beacon_release_campaigns
        WHERE workspace_id = $1 AND status = 'active'
        ORDER BY created_at DESC LIMIT 5`,
@@ -222,7 +221,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       model_id: "zen-default",
       title: `Review ${data.campaigns.length} active campaign${data.campaigns.length > 1 ? "s" : ""}`,
       description: `You have ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}. Get a summary and suggestions for improvement.`,
-      prefill_prompt: `Review our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.phase})`).join(", ")}. Suggest improvements for engagement and reach.`,
+      prefill_prompt: `Review our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.status})`).join(", ")}. Suggest improvements for engagement and reach.`,
       priority: "low",
       reason: `${data.campaigns.length} active campaigns running`,
     });

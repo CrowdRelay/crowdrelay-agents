@@ -1,11 +1,11 @@
-import type { DbPool } from "../store/db";
-import type { AgentTemplate } from "../templates/catalog";
-import { findTool, toolDefinitions } from "../mcp/tools";
-import { findProvider, type ProviderDef, type ProviderModel } from "../providers/registry";
-import { getCredential, getConnectedProviders } from "../store/credentials";
-import { updateTaskStatus, saveResult } from "../store/tasks";
-import { callOpenAICompatible, type LlmResponse } from "./opencode";
-import { callAnthropic } from "./anthropic";
+import type { DbPool } from "../store/db.js";
+import type { AgentTemplate } from "../templates/catalog.js";
+import { findTool, toolDefinitions } from "../mcp/tools.js";
+import { findProvider, type ProviderDef, type ProviderModel } from "../providers/registry.js";
+import { getCredential, getConnectedProviders } from "../store/credentials.js";
+import { updateTaskStatus, saveResult } from "../store/tasks.js";
+import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
+import { callAnthropic } from "./anthropic.js";
 
 export interface RunConfig {
   pool: DbPool;
@@ -217,7 +217,7 @@ async function callLLM(
 }
 
 // Import all providers from the registry
-import { PROVIDERS } from "../providers/registry";
+import { PROVIDERS } from "../providers/registry.js";
 
 function allProviders(): ProviderDef[] {
   return PROVIDERS;

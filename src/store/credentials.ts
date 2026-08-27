@@ -1,5 +1,5 @@
-import type { DbPool } from "./db";
-import { encrypt, decrypt } from "../crypto";
+import type { DbPool } from "./db.js";
+import { encrypt, decrypt } from "../crypto.js";
 
 export interface Credential {
   id: string;

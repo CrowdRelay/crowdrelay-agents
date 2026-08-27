@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { MODELS } from "../agent/models";
-import type { DbPool } from "../store/db";
+import { MODELS } from "../agent/models.js";
+import type { DbPool } from "../store/db.js";
 
 export function registerHealthRoutes(
   app: FastifyInstance,

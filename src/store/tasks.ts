@@ -1,4 +1,4 @@
-import type { DbPool } from "./db";
+import type { DbPool } from "./db.js";
 
 export interface Task {
   id: string;
