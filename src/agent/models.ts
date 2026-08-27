@@ -50,9 +50,9 @@ export const MODELS: ModelDef[] = [
     requiresKey: true,
   },
   {
-    id: "llama-3.3-70b-versatile",
+    id: "openai/gpt-oss-120b",
     provider: "groq",
-    name: "Groq Llama 3.3 70B (fast inference)",
+    name: "Groq GPT-OSS 120B (fast, strong reasoning)",
     freeLimit: { requestsPerDay: 14_400, rateLimitRpm: 30 },
     contextWindow: 128_000,
     bestFor: "Fast research, analysis, structured output",

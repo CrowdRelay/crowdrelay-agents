@@ -183,8 +183,9 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     validateApiKey: validateGroq,
     models: [
-      { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B (128K)", contextWindow: 128_000, bestFor: "Fast open-source model, good reasoning", paid: false },
-      { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant (128K)", contextWindow: 128_000, bestFor: "Very fast, simple tasks", paid: false },
+      { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B (128K)", contextWindow: 128_000, bestFor: "Strong reasoning, fast inference", paid: false },
+      { id: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B (128K)", contextWindow: 128_000, bestFor: "Very fast, good multilingual", paid: false },
+      { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B (128K)", contextWindow: 128_000, bestFor: "Fast, lightweight tasks", paid: false },
     ],
   },
   {
