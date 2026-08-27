@@ -1,8 +1,19 @@
 import type { FastifyInstance } from "fastify";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { MODELS } from "../agent/models.js";
 import type { DbPool } from "../store/db.js";
 
-const VERSION = process.env.npm_package_version ?? "unknown";
+let version = "unknown";
+try {
+  // import.meta.url is /app/dist/routes/health.js — package.json is /app/package.json
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+  version = JSON.parse(readFileSync(pkgPath, "utf8")).version ?? "unknown";
+} catch {
+  // ignore — fallback to "unknown"
+}
+const VERSION = version;
 
 export function registerHealthRoutes(
   app: FastifyInstance,
