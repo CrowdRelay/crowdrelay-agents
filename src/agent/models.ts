@@ -14,11 +14,11 @@ export interface ModelDef {
  */
 export const MODELS: ModelDef[] = [
   {
-    id: "mimo-v2.5-free",
+    id: "laguna-s-2.1-free",
     provider: "opencode-zen",
-    name: "MiMo v2.5 Free (Zen, fast)",
+    name: "Laguna S 2.1 Free (Zen, fast, 128K)",
     freeLimit: { requestsPerDay: 100 },
-    contextWindow: 32_000,
+    contextWindow: 128_000,
     bestFor: "General tasks, balanced reasoning and speed",
     requiresKey: false,
   },
@@ -32,12 +32,12 @@ export const MODELS: ModelDef[] = [
     requiresKey: false,
   },
   {
-    id: "laguna-s-2.1-free",
+    id: "mimo-v2.5-free",
     provider: "opencode-zen",
-    name: "Laguna S 2.1 Free (Zen, fallback)",
+    name: "MiMo v2.5 Free (Zen, quick, 32K)",
     freeLimit: { requestsPerDay: 100 },
-    contextWindow: 128_000,
-    bestFor: "Fallback for general tasks",
+    contextWindow: 32_000,
+    bestFor: "Quick tasks, short content generation",
     requiresKey: false,
   },
   {
