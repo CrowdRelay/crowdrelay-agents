@@ -10,6 +10,7 @@ import {
 import { findTemplate } from "../templates/catalog";
 import { findProvider, PROVIDERS } from "../providers/registry";
 import { runTask } from "../agent/runner";
+import { getSuggestions } from "../agent/suggestions";
 import { extractWorkspaceId } from "../auth";
 
 const createTaskSchema = z.object({
@@ -130,5 +131,19 @@ export function registerTaskRoutes(
       return reply.code(404).send({ error: "result not found" });
     }
     return reply.send(result);
+  });
+
+  // Suggestions — data-driven task prompts the operator can click to run
+  app.get("/suggestions", async (request, reply) => {
+    let workspaceId: string;
+    try {
+      workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
+    } catch (err) {
+      const statusCode = (err as { statusCode?: number }).statusCode ?? 401;
+      return reply.code(statusCode).send({ error: (err as Error).message });
+    }
+
+    const suggestions = await getSuggestions(opts.pool, workspaceId);
+    return reply.send({ suggestions });
   });
 }
