@@ -14,20 +14,20 @@ export interface ModelDef {
  */
 export const MODELS: ModelDef[] = [
   {
-    id: "zen-default",
+    id: "claude-sonnet-5",
     provider: "opencode-zen",
-    name: "Zen Default (128K context, GPT-class)",
+    name: "Claude Sonnet 5 (Zen, 200K context)",
     freeLimit: { requestsPerDay: 100 },
-    contextWindow: 128_000,
+    contextWindow: 200_000,
     bestFor: "General tasks, balanced reasoning and speed",
     requiresKey: false,
   },
   {
-    id: "zen-fast",
+    id: "gemini-3.5-flash",
     provider: "opencode-zen",
-    name: "Zen Fast (32K, very fast)",
+    name: "Gemini 3.5 Flash (Zen, fast)",
     freeLimit: { requestsPerDay: 100 },
-    contextWindow: 32_000,
+    contextWindow: 128_000,
     bestFor: "Quick tasks, short content generation",
     requiresKey: false,
   },

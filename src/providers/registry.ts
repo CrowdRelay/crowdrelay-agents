@@ -128,8 +128,8 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     freeTier: true,
     models: [
-      { id: "zen-default", name: "Zen Default (128K)", contextWindow: 128_000, bestFor: "General tasks, balanced reasoning", paid: false },
-      { id: "zen-fast", name: "Zen Fast (32K)", contextWindow: 32_000, bestFor: "Quick tasks, short content", paid: false },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5 (200K)", contextWindow: 200_000, bestFor: "General tasks, balanced reasoning", paid: false },
+      { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash (128K)", contextWindow: 128_000, bestFor: "Quick tasks, short content", paid: false },
       { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash Free (200K)", contextWindow: 200_000, bestFor: "Reasoning-heavy tasks", paid: false },
     ],
   },

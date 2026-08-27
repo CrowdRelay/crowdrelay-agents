@@ -6,7 +6,7 @@ export const pressPitchTemplate: AgentTemplate = {
   description:
     "Write a professional press pitch for a specific event, targeting media outlets, blogs, and zines. Uses your event data and outreach target list to craft a personalized pitch.",
   category: "content",
-  recommendedModels: ["zen-default", "gemini-2.5-flash", "groq/llama-3.3-70b"],
+  recommendedModels: ["claude-sonnet-5", "gemini-2.5-flash", "groq/llama-3.3-70b"],
   dataScope: ["list_events", "list_outreach_targets"],
   systemPrompt: `You are a music PR professional writing press pitches for a band.
 You have access to the band's event data and outreach target list through tools.
