@@ -13,8 +13,11 @@ import { registerOAuthRoutes } from "./routes/oauth.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerPremiumRoutes } from "./routes/premium.js";
+import { registerRedditRoutes } from "./routes/reddit.js";
 import { runDiscoveryCycle } from "./agent/discovery.js";
-import { recoverStaleTasks, createTask } from "./store/tasks.js";
+import { runScraperCycle } from "./agent/reddit-scraper.js";
+import { scrapeRedditQueries, getRedditBrowser } from "./agent/reddit-browser.js";
+import { recoverStaleTasks, createTask, claimQueuedTask, updateTaskStatus } from "./store/tasks.js";
 import { claimDueSchedules } from "./agent/schedules.js";
 import { findTemplate } from "./templates/catalog.js";
 import { runTask } from "./agent/runner.js";
@@ -134,6 +137,16 @@ async function main(): Promise<void> {
     defaultMonthlyBudgetMicroUsd: config.defaultMonthlyBudgetMicroUsd,
   });
 
+  // Reddit scraper routes (auth required — cookie management + the
+  // browser-as-API endpoints: credentials, scrape, post, metrics, results)
+  registerRedditRoutes(app, {
+    pool,
+    authKey: config.authKey,
+    encryptionKey: config.encryptionKey,
+    previousEncryptionKey: config.previousEncryptionKey,
+    oauthClients: config.oauthClients,
+  });
+
   const [host, portStr] = config.bind.split(":");
   const port = parseInt(portStr, 10);
   await app.listen({ host, port });
@@ -211,6 +224,71 @@ async function main(): Promise<void> {
     schedulerTimer.unref();
   }
 
+  // Task poller — every 15s, claim queued tasks created by the autopilot
+  // brain (via `agent.run.request` actions) and run them through the normal
+  // runner pipeline. The brain writes tasks with instance_id = NULL and
+  // status = 'queued'; this poller atomically claims them via
+  // FOR UPDATE SKIP LOCKED so multiple agent-service instances don't
+  // double-process.
+  let taskPollerTimer: NodeJS.Timeout | null = null;
+  if (config.schedulerEnabled) {
+    const pollTasks = async () => {
+      try {
+        for (let i = 0; i < 3; i++) {
+          const task = await claimQueuedTask(pool, INSTANCE_ID);
+          if (!task) break;
+
+          const template = findTemplate(task.template_id);
+          if (!template) {
+            console.error(`queued task ${task.id} has unknown template ${task.template_id}`);
+            await updateTaskStatus(pool, task.id, "failed", `unknown template: ${task.template_id}`);
+            continue;
+          }
+
+          const budget = await checkBudgetForTask(
+            pool,
+            task.workspace_id,
+            "",
+            task.model_id,
+            config.defaultMonthlyBudgetMicroUsd,
+          );
+          if (!budget.allowed) {
+            console.log(
+              `queued task ${task.id} skipped — budget exhausted for workspace ${task.workspace_id}`,
+            );
+            await updateTaskStatus(pool, task.id, "failed", "budget exhausted");
+            continue;
+          }
+
+          console.log(`claimed queued task ${task.id} (template: ${task.template_id})`);
+          const taskPromise = runTask({
+            pool,
+            taskId: task.id,
+            workspaceId: task.workspace_id,
+            template,
+            modelId: task.model_id,
+            prompt: task.prompt,
+            encryptionKey: config.encryptionKey,
+            previousEncryptionKey: config.previousEncryptionKey,
+            zenToken: config.opencodeZenToken,
+            fallbackGoogleKey: config.googleApiKey,
+            fallbackGroqKey: config.groqApiKey,
+            outcomesEnabled: config.outcomesEnabled,
+            tier: task.tier as "basic" | "premium",
+          }).catch((err) => {
+            console.error(`queued task ${task.id} crashed:`, err);
+          });
+          inFlightTasks.add(taskPromise);
+          void taskPromise.finally(() => inFlightTasks.delete(taskPromise));
+        }
+      } catch (err) {
+        console.error("task poller error:", err);
+      }
+    };
+    taskPollerTimer = setInterval(pollTasks, 15_000);
+    taskPollerTimer.unref();
+  }
+
   // Model discovery ticker — every 24h, poll OpenRouter's public /models
   // endpoint and upsert free-tier models into agent_service_discovered_models.
   // The runner reads this table to augment the hardcoded MODELS fallback
@@ -231,6 +309,85 @@ async function main(): Promise<void> {
   discoveryTimer = setInterval(discoveryTick, 24 * 60 * 60 * 1000);
   discoveryTimer.unref();
 
+  // Reddit scraper ticker — every 6 hours, refresh expired Reddit cookies.
+  // The scraper launches a headless Chromium, logs into Reddit via Google
+  // OAuth, and stores session cookies for the Rust worker to use. Only
+  // runs when a Google OAuth client is configured and there are workspaces
+  // with expired/missing cookies.
+  let scraperTimer: NodeJS.Timeout | null = null;
+  const scraperTick = async () => {
+    try {
+      const googleClient = config.oauthClients["google"] ?? null;
+      // Credential lookup: in production, Google credentials are stored
+      // encrypted in agent_service_credentials. For now, the scraper
+      // only runs when the operator triggers /reddit/login manually.
+      // The ticker is a placeholder for when automated credential storage
+      // is implemented.
+      if (googleClient) {
+        await runScraperCycle(pool, googleClient, async () => null);
+      }
+    } catch (err) {
+      console.error("reddit scraper ticker error:", err);
+    }
+  };
+  scraperTimer = setInterval(scraperTick, 6 * 60 * 60 * 1000);
+  scraperTimer.unref();
+
+  // Reddit browser scrape ticker — every 6 hours, re-scrape the growth
+  // loop's discovery queries through the logged-in browser and refresh
+  // reddit_scrape_results. Query sources, in order:
+  //   1. REDDIT_SCRAPER_QUERIES env (comma-separated, operator override)
+  //   2. distinct queries already stored per workspace (keeps results fresh)
+  // Only workspaces with stored reddit-browser credentials are touched, and
+  // every failure is contained: one bad workspace never blocks another.
+  let redditScrapeTimer: NodeJS.Timeout | null = null;
+  const redditScrapeTick = async () => {
+    try {
+      const envQueries = (process.env.REDDIT_SCRAPER_QUERIES ?? "")
+        .split(",")
+        .map((q) => q.trim())
+        .filter(Boolean);
+      const { rows } = await pool.query<{ workspace_id: string; queries: string[] }>(
+        `SELECT c.workspace_id,
+                COALESCE(
+                  (SELECT array_agg(DISTINCT r.query) FROM reddit_scrape_results r
+                    WHERE r.workspace_id = c.workspace_id),
+                  '{}'
+                ) AS queries
+         FROM agent_service_credentials c
+         WHERE c.provider = 'reddit-browser' AND c.status = 'active'`,
+      );
+      if (rows.length === 0) return;
+      console.log(`[reddit-scrape] scraping for ${rows.length} workspace(s)`);
+      for (const { workspace_id, queries } of rows) {
+        const scrapeQueries = envQueries.length > 0 ? envQueries : queries;
+        if (scrapeQueries.length === 0) continue;
+        try {
+          const outcome = await scrapeRedditQueries(
+            pool,
+            workspace_id,
+            scrapeQueries.slice(0, 10),
+            10,
+          );
+          console.log(
+            `[reddit-scrape] workspace ${workspace_id}: ${outcome.results.length} result(s)` +
+              (outcome.errors.length > 0 ? `, errors: ${outcome.errors.join(" | ")}` : ""),
+          );
+        } catch (err) {
+          console.error(`[reddit-scrape] workspace ${workspace_id} failed:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("reddit scrape ticker error:", err);
+    }
+  };
+  // First pass shortly after startup so a fresh deployment populates results
+  // without waiting six hours; then every 6 hours.
+  const initialScrape = setTimeout(redditScrapeTick, 2 * 60 * 1000);
+  initialScrape.unref();
+  redditScrapeTimer = setInterval(redditScrapeTick, 6 * 60 * 60 * 1000);
+  redditScrapeTimer.unref();
+
   // Graceful shutdown: drain HTTP requests, wait for in-flight tasks (up to
   // 30s), then close the DB pool. Without this, SIGTERM kills the process
   // immediately — in-flight tasks are left in "running" forever.
@@ -240,7 +397,10 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`received ${signal}, shutting down gracefully`);
     if (schedulerTimer) clearInterval(schedulerTimer);
+    if (taskPollerTimer) clearInterval(taskPollerTimer);
     if (discoveryTimer) clearInterval(discoveryTimer);
+    if (scraperTimer) clearInterval(scraperTimer);
+    if (redditScrapeTimer) clearInterval(redditScrapeTimer);
     await app.close();
 
     if (inFlightTasks.size > 0) {
@@ -248,6 +408,14 @@ async function main(): Promise<void> {
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 30_000));
       await Promise.race([Promise.allSettled([...inFlightTasks]), timeout]);
       console.log(`in-flight tasks settled (${inFlightTasks.size} remaining)`);
+    }
+
+    // Close the shared Reddit browser before the pool — a lingering Chromium
+    // would keep the container from exiting cleanly.
+    try {
+      await getRedditBrowser(pool).close();
+    } catch (err) {
+      console.error("reddit browser shutdown error:", err);
     }
 
     // Hard-cap pool.end() — if a DB client is still held by a long-running

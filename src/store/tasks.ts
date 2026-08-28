@@ -12,6 +12,7 @@ export interface Task {
   started_at: string | null;
   completed_at: string | null;
   metadata: Record<string, unknown>;
+  tier: "basic" | "premium";
 }
 
 export interface TaskResult {
@@ -49,6 +50,36 @@ export async function getTask(pool: DbPool, taskId: string): Promise<Task | null
   const { rows } = await pool.query(
     `SELECT * FROM agent_service_tasks WHERE id = $1`,
     [taskId],
+  );
+  return rows[0] ? rowToTask(rows[0]) : null;
+}
+
+/**
+ * Claims a queued task for execution. Tasks created by the autopilot brain
+ * (via `agent.run.request` actions) are written with `instance_id = NULL`
+ * and `status = 'queued'`. This function atomically claims one such task
+ * by setting its instance_id and status, so multiple agent-service instances
+ * don't double-process.
+ *
+ * Returns the claimed task, or null if no queued tasks are available.
+ */
+export async function claimQueuedTask(
+  pool: DbPool,
+  instanceId: string,
+): Promise<Task | null> {
+  const { rows } = await pool.query(
+    `UPDATE agent_service_tasks
+     SET status = 'running', started_at = now(), instance_id = $1
+     WHERE id = (
+       SELECT id FROM agent_service_tasks
+       WHERE status = 'queued'
+         AND (instance_id IS NULL OR instance_id = '')
+       ORDER BY created_at
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1
+     )
+     RETURNING *`,
+    [instanceId],
   );
   return rows[0] ? rowToTask(rows[0]) : null;
 }
@@ -180,5 +211,6 @@ function rowToTask(row: Record<string, unknown>): Task {
     started_at: row.started_at as string | null,
     completed_at: row.completed_at as string | null,
     metadata: row.metadata as Record<string, unknown>,
+    tier: (row.tier as "basic" | "premium") ?? "basic",
   };
 }

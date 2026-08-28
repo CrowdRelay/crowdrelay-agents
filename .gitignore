@@ -4,3 +4,7 @@ dist/
 *.log
 .DS_Store
 *.local.md
+
+# Playwright browser profile — contains Reddit session cookies.
+# Must never be committed; persisted via Docker volume in production.
+data/

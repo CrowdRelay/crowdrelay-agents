@@ -3,10 +3,21 @@ services:
     build: .
     ports:
       - "127.0.0.1:8095:8095"
-    environment:
-      AGENT_SERVICE_BIND: "0.0.0.0:8095"
-      DATABASE_URL: "postgres://crowdrelay:password@host.docker.internal:5432/crowdrelay"
-      AGENT_SERVICE_AUTH_KEY: "test-key"
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgres://crowdrelay:crowdrelay-local-only@crowdrelay-postgres-1:5432/crowdrelay"
+    volumes:
+      - agent-browser-data:/app/data
+    networks:
+      - default
+      - crowdrelay
     restart: unless-stopped
+
+volumes:
+  agent-browser-data:
+
+networks:
+  crowdrelay:
+    external: true
+    name: crowdrelay_default

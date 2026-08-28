@@ -31,6 +31,7 @@ services:
       DATABASE_URL: "postgres://crowdrelay:${CROWDRELAY_DB_PASSWORD}@crowdrelay-db:5432/crowdrelay"
       AGENT_SERVICE_AUTH_KEY: "${AGENT_SERVICE_AUTH_KEY:?AGENT_SERVICE_AUTH_KEY required}"
       AGENT_SERVICE_ENCRYPTION_KEY: "${AGENT_SERVICE_ENCRYPTION_KEY:?AGENT_SERVICE_ENCRYPTION_KEY required}"
+      REDDIT_BROWSER_PROFILE_DIR: "/data/reddit-browser-profile"
       OPENCODE_ZEN_TOKEN: "${OPENCODE_ZEN_TOKEN:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GROQ_API_KEY: "${GROQ_API_KEY:-}"
@@ -51,11 +52,15 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
-    mem_limit: 128m
-    cpus: 0.25
-    read_only: true
+    # Playwright/Chromium needs more memory than a pure API service.
+    mem_limit: 512m
+    cpus: 1.0
+    # read_only is relaxed because Playwright writes to the profile directory.
+    read_only: false
     tmpfs:
-      - /tmp:size=8m,mode=1777
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - agent-browser-state:/data
     cap_drop:
       - ALL
     security_opt:
@@ -67,6 +72,9 @@ services:
   app:
     environment:
       CONTROL_PLANE_AGENT_SERVICE_URL: "http://agent-service:8095"
+
+volumes:
+  agent-browser-state:
 
 networks:
   crowdrelay-shared:

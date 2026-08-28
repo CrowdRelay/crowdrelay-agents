@@ -1,0 +1,122 @@
+name: Publish container image
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: publish-images-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the exact validated revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.IMAGE_SHA }}
+
+      - name: Resolve immutable build identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          build_timestamp="$(git show -s --format=%cI "${IMAGE_SHA}")"
+          [[ -n "$build_timestamp" ]] || { echo "Missing commit timestamp for ${IMAGE_SHA}" >&2; exit 1; }
+          echo "BUILD_TIMESTAMP=${build_timestamp}" >> "$GITHUB_ENV"
+          owner_lower="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "OWNER_LOWER=${owner_lower}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=ghcr.io/${owner_lower}/crowdrelay-agents" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push arch-suffixed image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.IMAGE_SHA }}
+            org.opencontainers.image.created=${{ env.BUILD_TIMESTAMP }}
+            org.opencontainers.image.licenses=Apache-2.0
+          tags: |
+            ${{ env.IMAGE_NAME }}:sha-${{ env.IMAGE_SHA }}-${{ matrix.arch }}
+          cache-from: type=registry,ref=ghcr.io/${{ env.OWNER_LOWER }}/crowdrelay-agents-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/${{ env.OWNER_LOWER }}/crowdrelay-agents-buildcache:${{ matrix.arch }},mode=max
+          provenance: false
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner_lower="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lower}/crowdrelay-agents"
+          sha_tag="sha-${IMAGE_SHA}"
+          docker buildx imagetools create \
+            -t "${image}:${sha_tag}" \
+            "${image}:sha-${IMAGE_SHA}-amd64" \
+            "${image}:sha-${IMAGE_SHA}-arm64"
+          printf 'MERGE=PASS image=%s tag=%s\n' "$image" "$sha_tag"

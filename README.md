@@ -1,12 +1,22 @@
 # CrowdRelay Agents
 
-**Free + paid LLM agent service for creative tasks, seeded with real tenant data.**
+**Free + paid LLM agent service and Reddit authenticated scraper, seeded with real tenant data.**
 
-Node.js + TypeScript + Fastify service that integrates free and paid LLM providers
-(OpenCode Zen, OpenAI, Anthropic, Google Gemini, Groq, OpenRouter) to generate
-press pitches, social media posts, and campaign analysis for music industry tenants.
-Each task pulls live data from the CrowdRelay Postgres database via MCP-style tools,
-so the LLM writes about real events, real fan counts, and real outreach targets.
+Node.js + TypeScript + Fastify service that does two things:
+
+1. **LLM worker execution** — integrates free and paid LLM providers (OpenCode Zen,
+   OpenAI, Anthropic, Google Gemini, Groq, OpenRouter) to generate press pitches,
+   social posts, community engagement drafts, growth strategy analysis, Reddit
+   subreddit scans, Signal invite drafts, and campaign analysis for music industry
+   tenants. Each task pulls live data from the CrowdRelay Postgres database via
+   MCP-style tools, so the LLM writes about real events, real fan counts, and real
+   outreach targets.
+
+2. **Reddit authenticated scraping** — launches a headless Chromium browser via
+   Playwright, logs into Reddit via Google OAuth, extracts session cookies, and
+   serves them to the Rust worker for authenticated JSON API access. This bypasses
+   Reddit's JavaScript bot-detection challenge that blocks all unauthenticated
+   `.json` endpoint access.
 
 ## Features
 
@@ -22,7 +32,8 @@ so the LLM writes about real events, real fan counts, and real outreach targets.
   can actually use — free models always available, paid models require a connected provider
 
 ### Task Execution
-- **Templates**: Press pitch, social post (more planned)
+- **8 templates**: growth-strategist, reddit-scanner, community-engager,
+  signal-inviter, press-pitch, social-post, campaign-analysis, audience-research
 - **MCP-style data tools**: `list_events`, `list_outreach_targets`, `fan_stats` —
   read-only, tenant-scoped Postgres queries that seed the LLM prompt with real data
 - **Model fallback chain**: If the requested model fails, the runner tries free-tier
@@ -44,6 +55,16 @@ so the LLM writes about real events, real fan counts, and real outreach targets.
 - **AES-256-GCM encryption**: Credential vault uses authenticated encryption
 - **Read-only MCP tools**: Tenant data tools only query — never mutate
 - **Workspace-scoped**: All credentials, tasks, and results are scoped to `workspace_id`
+
+### Reddit Authenticated Scraping
+- **Playwright + Chromium**: Headless browser logs into Reddit via Google OAuth
+- **Session cookie extraction**: Cookies stored in `agent_service_reddit_cookies`
+  with a 7-day expiry; auto-refreshed by a background ticker every 6 hours
+- **Cookie serving**: The Rust worker fetches cookies via `GET /reddit/cookies`
+  and uses them with reqwest for authenticated JSON API calls
+- **Bypasses JS challenge**: Reddit blocks all unauthenticated `.json` endpoints
+  with a JavaScript bot-detection challenge; authenticated cookies from a real
+  browser session bypass this completely
 
 ## Architecture
 
@@ -156,6 +177,12 @@ All tables are prefixed with `agent_service_` and stored in the shared CrowdRela
 - `agent_service_task_results` — Completed task outputs
 - `agent_service_credentials` — Encrypted provider credentials (per workspace)
 - `agent_service_provider_health` — Provider connectivity monitoring
+- `agent_service_reddit_cookies` — Reddit session cookies (per workspace, 7-day expiry)
+- `agent_service_discovered_models` — Free-tier models discovered from OpenRouter/Zen catalogs
+- `agent_service_schedules` — Scheduled agent runs (minutes granularity)
+- `agent_service_workflows` — Brain-dispatched growth plans with sub-tasks
+- `agent_service_usage` — Per-workspace, per-model daily usage ledger
+- `agent_service_budgets` — Per-workspace monthly spend ceiling
 
 ## Docker
 

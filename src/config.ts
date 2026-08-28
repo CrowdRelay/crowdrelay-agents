@@ -29,6 +29,8 @@ export interface Config {
   schedulerEnabled: boolean;
   /** Default monthly spend ceiling per workspace, in micro-USD (1e-6 USD). */
   defaultMonthlyBudgetMicroUsd: number;
+  /** When true, the Reddit scraper ticker runs every 6 hours. */
+  redditScraperEnabled: boolean;
 }
 
 function required(name: string): string {
@@ -84,6 +86,7 @@ export function loadConfig(): Config {
     defaultMonthlyBudgetMicroUsd: parseBudgetMicroUsd(
       optional("AGENT_DEFAULT_MONTHLY_BUDGET_MICRO_USD"),
     ),
+    redditScraperEnabled: optional("REDDIT_SCRAPER_ENABLED") !== "false",
   };
 }
 

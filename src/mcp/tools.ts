@@ -1,17 +1,9 @@
 import type { DbPool } from "../store/db.js";
+import { scrapeRedditQueries } from "../agent/reddit-browser.js";
 
-/** Reddit subreddit search response shape (only the fields we use). */
-interface RedditSubData {
-  display_name_prefixed: string;
-  url: string;
-  title: string;
-  public_description: string;
-  subscribers: number | null;
-  over18: boolean;
-}
-
-/** Masks an email for LLM consumption: ab.cd@domain.tld → ab***@domain.tld.
- *  The model never needs a raw address — the autopilot resolves recipients. */
+/**
+ * Masks an email for LLM consumption: ab.cd@domain.tld → ab***@domain.tld.
+ * The model never needs a raw address — the autopilot resolves recipients. */
 export function maskEmail(email: string | null): string | null {
   if (!email || !email.includes("@")) return email;
   const [local, domain] = email.split("@");
@@ -32,10 +24,11 @@ function maskRowEmails<T extends Record<string, unknown>>(row: T, keys: string[]
 }
 
 /**
- * MCP tool definitions. Most tools are read-only Postgres queries scoped to
- * a single workspace_id. The `search_reddit_communities` tool is the first
- * that makes an external HTTP call (to Reddit's public search API); it does
- * not touch the database and does not require authentication.
+ * MCP tool definitions. Tools are read-only Postgres queries scoped to a
+ * single workspace_id. `search_reddit_communities` reads the browser-scraped
+ * reddit_scrape_results table (and triggers a scrape when the query is
+ * new) instead of calling Reddit directly — Reddit 403s everything that is
+ * not a real browser.
  */
 
 export interface McpTool {
@@ -474,7 +467,7 @@ export const tools: McpTool[] = [
   {
     name: "search_reddit_communities",
     description:
-      "Search Reddit for subreddits matching a query. Returns real subreddit names, subscriber counts, descriptions, and URLs from Reddit's public search API. Use this to find communities where the band could engage — do NOT hallucinate subreddit names.",
+      "Search Reddit for subreddits matching a query. Returns real subreddit names, subscriber counts, descriptions, and URLs. Results come from the browser-scraped reddit_scrape_results table; if the query has no stored results yet, a scrape is triggered first (may take up to a minute on first run). Use this to find communities where the band could engage — do NOT hallucinate subreddit names.",
     parameters: {
       query: {
         type: "string",
@@ -487,7 +480,7 @@ export const tools: McpTool[] = [
         required: false,
       },
     },
-    async execute(_pool, _workspaceId, params) {
+    async execute(pool, workspaceId, params) {
       const rawQuery = typeof params.query === "string"
         ? params.query
         : params.query != null ? String(params.query) : "";
@@ -499,47 +492,40 @@ export const tools: McpTool[] = [
       const limit = Number.isFinite(rawLimit)
         ? Math.min(Math.max(1, Math.floor(rawLimit)), 25)
         : 10;
-      const url = new URL("https://www.reddit.com/subreddits/search.json");
-      url.searchParams.set("q", query);
-      url.searchParams.set("limit", String(limit));
-      url.searchParams.set("sort", "activity");
 
-      try {
-        const response = await fetch(url, {
-          headers: { "User-Agent": "crowdrelay/1.0 agent-service (research)" },
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!response.ok) {
-          return { query, error: `Reddit search returned HTTP ${response.status}`, results: [] };
-        }
-        const body = (await response.json()) as {
-          data?: { children?: Array<{ data?: RedditSubData }> };
-        };
-        const children = body.data?.children ?? [];
-        const results = children
-          .map((child) => child.data)
-          .filter(
-            (d): d is RedditSubData =>
-              !!d &&
-              !!d.display_name_prefixed &&
-              !!d.url &&
-              d.over18 !== true,
+      const readResults = async () =>
+        (
+          await pool.query(
+            `SELECT subreddit_name, display_name, description, subscribers, url
+             FROM reddit_scrape_results
+             WHERE workspace_id = $1 AND query = $2 AND over18 = false
+             ORDER BY subscribers DESC
+             LIMIT $3`,
+            [workspaceId, query, limit],
           )
-          .map((d) => ({
-            name: d.display_name_prefixed,
-            title: d.title || d.display_name_prefixed,
-            description: (d.public_description || "").slice(0, 500),
-            subscribers: d.subscribers ?? 0,
-            url: `https://www.reddit.com${d.url.replace(/\/$/, "")}`,
-          }));
-        return { query, results };
-      } catch (err) {
-        return {
-          query,
-          error: err instanceof Error ? err.message : String(err),
-          results: [],
-        };
+        ).rows;
+
+      let rows = await readResults();
+      if (rows.length === 0) {
+        // First time this query is used — scrape it now through the
+        // browser. Results land in reddit_scrape_results and are reused
+        // by every later reader (worker, ticker, other agents).
+        const outcome = await scrapeRedditQueries(pool, workspaceId, [query], limit);
+        if (outcome.results.length === 0 && outcome.errors.length > 0) {
+          return { query, error: outcome.errors.join(" | "), results: [] };
+        }
+        rows = await readResults();
       }
+      return {
+        query,
+        results: rows.map((row) => ({
+          name: `r/${row.subreddit_name}`,
+          title: row.display_name || row.subreddit_name,
+          description: (row.description ?? "").slice(0, 500),
+          subscribers: row.subscribers,
+          url: row.url,
+        })),
+      };
     },
   },
 ];

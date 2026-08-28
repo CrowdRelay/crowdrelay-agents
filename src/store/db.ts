@@ -214,6 +214,39 @@ export async function runMigrations(pool: DbPool): Promise<void> {
     // Result lookup sorts by created_at DESC — covering index avoids sort.
     `CREATE INDEX IF NOT EXISTS agent_service_results_task_created_idx
       ON agent_service_results (task_id, created_at DESC)`,
+    // Reddit session cookies obtained by the Playwright scraper. The scraper
+    // logs into Reddit via Google OAuth in a headless Chromium, extracts the
+    // session cookies, and stores them here. The Rust worker fetches them
+    // via /reddit/cookies and uses them with reqwest for authenticated JSON
+    // API access — bypassing Reddit's JS bot-detection challenge.
+    `CREATE TABLE IF NOT EXISTS agent_service_reddit_cookies (
+      workspace_id    UUID PRIMARY KEY,
+      cookies         JSONB NOT NULL,
+      reddit_username TEXT,
+      obtained_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at      TIMESTAMPTZ NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'failed'))
+    )`,
+    // Reddit subreddit search results scraped by the persistent browser
+    // (agent/reddit-browser.ts). One row per (workspace, query, subreddit);
+    // re-scrapes refresh subscribers/description in place. The Rust worker
+    // and the MCP tool read this table INSTEAD of calling Reddit — the
+    // browser is the only thing that talks to Reddit directly.
+    `CREATE TABLE IF NOT EXISTS reddit_scrape_results (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id    UUID NOT NULL,
+      query           TEXT NOT NULL,
+      subreddit_name  TEXT NOT NULL,
+      display_name    TEXT NOT NULL DEFAULT '',
+      description     TEXT NOT NULL DEFAULT '',
+      subscribers     INT  NOT NULL DEFAULT 0,
+      url             TEXT NOT NULL DEFAULT '',
+      over18          BOOLEAN NOT NULL DEFAULT false,
+      scraped_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (workspace_id, query, subreddit_name)
+    )`,
+    `CREATE INDEX IF NOT EXISTS reddit_scrape_results_lookup_idx
+      ON reddit_scrape_results (workspace_id, query, subscribers DESC)`,
   ];
 
   for (const sql of statements) {
