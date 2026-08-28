@@ -121,17 +121,31 @@ export function renderBlock(
   }
 
   // Objects with a `results` array (e.g. search_reddit_communities): truncate
-  // the inner array using maxRows, preserving the wrapper's metadata fields.
+  // the inner array to fit the character budget, preserving the wrapper's
+  // metadata fields (query, error, etc.). Rows are truncated from the tail
+  // (the SQL already orders by relevance).
   if (value !== null && typeof value === "object" && Array.isArray((value as Record<string, unknown>).results)) {
     const obj = value as { results: unknown[]; [key: string]: unknown };
-    if (obj.results.length > maxRows) {
-      const trimmed = { ...obj, results: obj.results.slice(0, maxRows) };
-      const rendered = JSON.stringify(trimmed);
-      if (rendered.length <= maxChars) {
-        return { rendered, truncated: true, droppedRows: obj.results.length - maxRows };
-      }
+    // Start with maxRows, then halve until it fits the char budget.
+    let keep = Math.min(obj.results.length, maxRows);
+    let dropped = obj.results.length - keep;
+    let candidate = JSON.stringify({ ...obj, results: obj.results.slice(0, keep) });
+    while (candidate.length > maxChars && keep > 1) {
+      const next = Math.max(1, Math.floor(keep / 2));
+      dropped += keep - next;
+      keep = next;
+      candidate = JSON.stringify({ ...obj, results: obj.results.slice(0, keep) });
     }
-    // Still too big after row truncation — fall through to the generic path.
+    if (candidate.length <= maxChars) {
+      if (dropped > 0) {
+        const annotated = JSON.stringify({ ...obj, results: obj.results.slice(0, keep), note: `showing ${keep} of ${obj.results.length} rows` });
+        if (annotated.length <= maxChars) {
+          return { rendered: annotated, truncated: true, droppedRows: dropped };
+        }
+      }
+      return { rendered: candidate, truncated: dropped > 0, droppedRows: dropped };
+    }
+    // A single row is too big — fall through to the generic path.
   }
 
   const compact = JSON.stringify(value);

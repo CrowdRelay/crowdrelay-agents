@@ -521,7 +521,7 @@ export const tools: McpTool[] = [
         results: rows.map((row) => ({
           name: `r/${row.subreddit_name}`,
           title: row.display_name || row.subreddit_name,
-          description: (row.description ?? "").slice(0, 500),
+          description: (row.description ?? "").slice(0, 200),
           subscribers: row.subscribers,
           url: row.url,
         })),
