@@ -189,7 +189,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
   if (data.outreachTargets.active < 10) {
     suggestions.push({
       id: "target-research",
-      template_id: "press-pitch",
+      template_id: "reddit-scanner",
       model_id: "laguna-s-2.1-free",
       title: "Expand outreach target list",
       description: `You have ${data.outreachTargets.active} active outreach targets. Research and identify new media outlets, blogs, and zines in your market to expand your reach.`,
@@ -203,7 +203,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
   if (data.fanStats.new_30d > 0) {
     suggestions.push({
       id: "audience-analysis",
-      template_id: "social-post",
+      template_id: "audience-research",
       model_id: "laguna-s-2.1-free",
       title: "Analyze recent fan growth",
       description: `${data.fanStats.new_30d} new fans in the last 30 days (${data.fanStats.total} total). Analyze where they're coming from and suggest ways to accelerate growth.`,

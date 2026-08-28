@@ -46,21 +46,19 @@ interface BlockPlan {
 
 const BLOCK_DEFAULTS: Record<string, BlockPlan> = {
   get_workspace_profile: { priority: 1, share: 0.04, maxRows: 1, label: "Workspace" },
-  list_events: { priority: 1, share: 0.16, maxRows: 15, label: "Upcoming & Recent Events" },
+  list_events: { priority: 1, share: 0.16, maxRows: 15, label: "Events" },
   ticket_sales_summary: { priority: 1, share: 0.08, maxRows: 15, label: "Ticket Sales" },
   list_outreach_targets: { priority: 2, share: 0.16, maxRows: 50, label: "Outreach Targets" },
   fan_stats: { priority: 2, share: 0.05, maxRows: 1, label: "Fan Statistics" },
-  outreach_wave_status: { priority: 2, share: 0.04, maxRows: 20, label: "Outreach Waves" },
   list_fan_segments: { priority: 2, share: 0.05, maxRows: 20, label: "Fan Segments" },
   campaign_performance: { priority: 2, share: 0.10, maxRows: 10, label: "Campaign Performance" },
   growth_metrics: { priority: 3, share: 0.08, maxRows: 40, label: "Growth Metrics" },
   get_opportunity_board: { priority: 3, share: 0.10, maxRows: 15, label: "Opportunity Board" },
   list_recent_action_outcomes: { priority: 3, share: 0.08, maxRows: 10, label: "Recent Autopilot Outcomes" },
-  release_plans: { priority: 3, share: 0.08, maxRows: 10, label: "Release Plans" },
-  list_release_campaigns: { priority: 3, share: 0.06, maxRows: 10, label: "Release Campaigns" },
   list_merch_sales: { priority: 3, share: 0.08, maxRows: 20, label: "Recent Merch Sales" },
-  beacon_signal_summary: { priority: 4, share: 0.05, maxRows: 20, label: "Beacon Signals" },
   get_agent_history: { priority: 4, share: 0.10, maxRows: 20, label: "Recent Agent Runs" },
+  search_reddit_communities: { priority: 2, share: 0.10, maxRows: 15, label: "Reddit Search" },
+  list_community_post_metrics: { priority: 2, share: 0.06, maxRows: 20, label: "Post Performance" },
 };
 
 const UNKNOWN_BLOCK: BlockPlan = { priority: 3, share: 0.06, maxRows: 20, label: "Tenant Data" };
@@ -122,6 +120,20 @@ export function renderBlock(
     return { rendered: candidate, truncated: dropped > 0, droppedRows: dropped };
   }
 
+  // Objects with a `results` array (e.g. search_reddit_communities): truncate
+  // the inner array using maxRows, preserving the wrapper's metadata fields.
+  if (value !== null && typeof value === "object" && Array.isArray((value as Record<string, unknown>).results)) {
+    const obj = value as { results: unknown[]; [key: string]: unknown };
+    if (obj.results.length > maxRows) {
+      const trimmed = { ...obj, results: obj.results.slice(0, maxRows) };
+      const rendered = JSON.stringify(trimmed);
+      if (rendered.length <= maxChars) {
+        return { rendered, truncated: true, droppedRows: obj.results.length - maxRows };
+      }
+    }
+    // Still too big after row truncation — fall through to the generic path.
+  }
+
   const compact = JSON.stringify(value);
   if (compact.length <= maxChars) {
     return { rendered: compact, truncated: false, droppedRows: 0 };
@@ -159,32 +171,52 @@ export async function buildContext(params: {
   const truncationReport: ContextBundle["truncationReport"] = [];
   let remaining = budget;
 
+  // Track how many times each tool has been invoked so duplicate tool
+  // entries (e.g. multiple Reddit searches with different queries) get
+  // unique data keys instead of overwriting each other.
+  const toolInvocationCount: Record<string, number> = {};
+
   for (const { item, plan } of planned) {
+    // For duplicate tools, disambiguate the label with the query param (if any)
+    // so the prompt sections are distinguishable. The count is computed below
+    // for the dataKey; here we just need the label suffix.
+    const dupCount = toolInvocationCount[item.tool] ?? 0;
+    const label =
+      dupCount > 0 && item.params?.query && typeof item.params.query === "string"
+        ? `${plan.label}: ${item.params.query}`
+        : plan.label;
+
     if (remaining < MIN_BLOCK_BUDGET_CHARS) {
-      blocks.push({ tool: item.tool, label: plan.label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "skipped: context budget exhausted" });
+      blocks.push({ tool: item.tool, label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "skipped: context budget exhausted" });
       truncationReport.push({ tool: item.tool, chars: 0, truncated: true, droppedRows: 0, error: "skipped: context budget exhausted" });
       continue;
     }
 
     const tool = findTool(item.tool);
     if (!tool) {
-      blocks.push({ tool: item.tool, label: plan.label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "unknown tool" });
+      blocks.push({ tool: item.tool, label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "unknown tool" });
       truncationReport.push({ tool: item.tool, chars: 0, truncated: false, droppedRows: 0, error: "unknown tool" });
       continue;
     }
+
+    // Build a unique data key: first invocation uses the tool name, subsequent
+    // invocations get a suffix (e.g. "search_reddit_communities_2").
+    const count = dupCount + 1;
+    toolInvocationCount[item.tool] = count;
+    const dataKey = count === 1 ? item.tool : `${item.tool}_${count}`;
 
     try {
       const value = await tool.execute(pool, workspaceId, item.params ?? {});
       const blockBudget = Math.min(Math.floor(budget * plan.share), remaining);
       const { rendered, truncated, droppedRows } = renderBlock(value, blockBudget, plan.maxRows);
       remaining -= rendered.length;
-      data[item.tool] = JSON.parse(rendered) as unknown;
-      blocks.push({ tool: item.tool, label: plan.label, priority: plan.priority, chars: rendered.length, truncated, droppedRows });
-      truncationReport.push({ tool: item.tool, chars: rendered.length, truncated, droppedRows });
+      data[dataKey] = JSON.parse(rendered) as unknown;
+      blocks.push({ tool: dataKey, label, priority: plan.priority, chars: rendered.length, truncated, droppedRows });
+      truncationReport.push({ tool: dataKey, chars: rendered.length, truncated, droppedRows });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      blocks.push({ tool: item.tool, label: plan.label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "data unavailable" });
-      truncationReport.push({ tool: item.tool, chars: 0, truncated: false, droppedRows: 0, error: message });
+      blocks.push({ tool: dataKey, label, priority: plan.priority, chars: 0, truncated: false, droppedRows: 0, error: "data unavailable" });
+      truncationReport.push({ tool: dataKey, chars: 0, truncated: false, droppedRows: 0, error: message });
     }
   }
 

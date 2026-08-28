@@ -34,12 +34,13 @@ export async function createTask(
   prompt: string,
   metadata: Record<string, unknown>,
   instanceId: string,
+  tier: "basic" | "premium" = "basic",
 ): Promise<Task> {
   const { rows } = await pool.query(
-    `INSERT INTO agent_service_tasks (workspace_id, template_id, model_id, prompt, metadata, instance_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO agent_service_tasks (workspace_id, template_id, model_id, prompt, metadata, instance_id, tier)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [workspaceId, templateId, modelId, prompt, JSON.stringify(metadata), instanceId],
+    [workspaceId, templateId, modelId, prompt, JSON.stringify(metadata), instanceId, tier],
   );
   return rowToTask(rows[0]);
 }

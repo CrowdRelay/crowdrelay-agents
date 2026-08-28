@@ -1,6 +1,9 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual as cryptoTimingSafeEqual } from "node:crypto";
 
 const NAMESPACE = "crowdrelay-control-plane-v1:";
+
+// UUID v7 (and v4) format: 8-4-4-4-12 hex digits
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Derives an HMAC-SHA256 token for a workspace, matching the control plane's
@@ -15,7 +18,7 @@ export function deriveToken(masterKey: string, workspaceId: string): string {
 
 /**
  * Verifies that the provided bearer token matches the expected derived token
- * for the given workspace. Uses timing-safe comparison.
+ * for the given workspace. Uses Node's constant-time comparison.
  */
 export function verifyToken(
   masterKey: string,
@@ -23,16 +26,10 @@ export function verifyToken(
   bearerToken: string,
 ): boolean {
   const expected = deriveToken(masterKey, workspaceId);
-  if (bearerToken.length !== expected.length) return false;
-  return timingSafeEqual(bearerToken, expected);
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
+  const expectedBuf = Buffer.from(expected, "hex");
+  const bearerBuf = Buffer.from(bearerToken, "hex");
+  if (expectedBuf.length !== bearerBuf.length) return false;
+  return cryptoTimingSafeEqual(expectedBuf, bearerBuf);
 }
 
 /**
@@ -48,6 +45,9 @@ export function extractWorkspaceId(
 
   if (typeof workspaceId !== "string" || !workspaceId) {
     throw new AuthError("missing X-Workspace-Id header");
+  }
+  if (!UUID_RE.test(workspaceId)) {
+    throw new AuthError("X-Workspace-Id must be a valid UUID");
   }
   if (typeof auth !== "string" || !auth.startsWith("Bearer ")) {
     throw new AuthError("missing or malformed Authorization header");

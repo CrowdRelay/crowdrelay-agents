@@ -8,10 +8,10 @@ const IV_LENGTH = 12;
  * Returns a base64 string: iv:authTag:ciphertext
  */
 export function encrypt(plaintext: string, masterKey: string): string {
-  const key = Buffer.from(masterKey, "hex");
-  if (key.length !== 32) {
-    throw new Error("master key must be 32 bytes (64 hex characters)");
+  if (!/^[0-9a-fA-F]{64}$/.test(masterKey)) {
+    throw new Error("master key must be 64 hex characters (32 bytes)");
   }
+  const key = Buffer.from(masterKey, "hex");
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const encrypted = Buffer.concat([
@@ -27,10 +27,10 @@ export function encrypt(plaintext: string, masterKey: string): string {
  * Returns the original plaintext.
  */
 export function decrypt(ciphertext: string, masterKey: string): string {
-  const key = Buffer.from(masterKey, "hex");
-  if (key.length !== 32) {
-    throw new Error("master key must be 32 bytes (64 hex characters)");
+  if (!/^[0-9a-fA-F]{64}$/.test(masterKey)) {
+    throw new Error("master key must be 64 hex characters (32 bytes)");
   }
+  const key = Buffer.from(masterKey, "hex");
   const parts = ciphertext.split(":");
   if (parts.length !== 3) {
     throw new Error("invalid ciphertext format");

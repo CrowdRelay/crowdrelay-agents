@@ -41,18 +41,20 @@ export async function storeCredential(
   credentialType: "api_key" | "oauth_refresh_token",
   plaintextValue: string,
   encryptionKey: string,
+  providerAccount?: string,
 ): Promise<Credential> {
   const encrypted = encrypt(plaintextValue, encryptionKey);
   const { rows } = await pool.query(
     `INSERT INTO agent_service_credentials
-      (workspace_id, provider, label, credential_type, encrypted_value, status, last_validated_at)
-     VALUES ($1, $2, $3, $4, $5, 'active', now())
+      (workspace_id, provider, label, credential_type, encrypted_value, status, last_validated_at, provider_account)
+     VALUES ($1, $2, $3, $4, $5, 'active', now(), $6)
      ON CONFLICT (workspace_id, provider)
      DO UPDATE SET label = $3, credential_type = $4, encrypted_value = $5,
-                   status = 'active', last_validated_at = now(), last_validation_error = NULL
+                   status = 'active', last_validated_at = now(), last_validation_error = NULL,
+                   provider_account = COALESCE($6, agent_service_credentials.provider_account)
      RETURNING id, workspace_id, provider, label, credential_type, status,
                last_validated_at, last_validation_error, created_at`,
-    [workspaceId, provider, label, credentialType, encrypted],
+    [workspaceId, provider, label, credentialType, encrypted, providerAccount ?? null],
   );
   return rowToCredential(rows[0]);
 }

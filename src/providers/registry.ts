@@ -44,6 +44,12 @@ export interface ProviderModel {
   paid: boolean;
   /** Approximate USD per million tokens. Absent = unknown (cost tracked as 0). */
   pricing?: { inputPerMTokUsd: number; outputPerMTokUsd: number };
+  /**
+   * Marks an agentic session model (currently only Cognition/Devin). The runner
+   * dispatches these via callDevinSession() instead of callOpenAICompatible() —
+   * the session runs autonomously with shell/file/web/sub-agent access.
+   */
+  agentic?: boolean;
 }
 
 export interface ProviderDef {
@@ -111,8 +117,11 @@ async function validateAnthropic(key: string): Promise<{ valid: boolean; error?:
 async function validateGoogle(key: string): Promise<{ valid: boolean; error?: string }> {
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
-      { signal: AbortSignal.timeout(10_000) },
+      "https://generativelanguage.googleapis.com/v1beta/models",
+      {
+        headers: { "x-goog-api-key": key },
+        signal: AbortSignal.timeout(10_000),
+      },
     );
     if (res.ok) return { valid: true };
     if (res.status === 403 || res.status === 401) return { valid: false, error: "Invalid API key" };
@@ -159,6 +168,36 @@ async function validateXAI(key: string): Promise<{ valid: boolean; error?: strin
     if (res.ok) return { valid: true };
     if (res.status === 401) return { valid: false, error: "Invalid API key" };
     return { valid: false, error: `xAI returned ${res.status}` };
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : "Connection failed" };
+  }
+}
+
+async function validateZhipu(key: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const baseUrl = process.env.ZHIPU_API_BASE_URL?.replace(/\/chat\/completions\/?$/, "") ?? "https://api.z.ai/api/paas/v4";
+    const res = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { valid: true };
+    if (res.status === 401) return { valid: false, error: "Invalid API key" };
+    return { valid: false, error: `Zhipu returned ${res.status}` };
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : "Connection failed" };
+  }
+}
+
+async function validateCognition(key: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    // The Devin API uses cog_ prefixed keys. Validate by calling the /v3/self endpoint.
+    const res = await fetch("https://api.devin.ai/v3/self", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { valid: true };
+    if (res.status === 401) return { valid: false, error: "Invalid API key" };
+    return { valid: false, error: `Cognition returned ${res.status}` };
   } catch (e) {
     return { valid: false, error: e instanceof Error ? e.message : "Connection failed" };
   }
@@ -288,6 +327,7 @@ export const PROVIDERS: ProviderDef[] = [
       { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4 via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
       { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
       { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "z-ai/glm-5.2:free", name: "GLM-5.2 Free via OpenRouter", contextWindow: 200_000, bestFor: "Free tier of GLM-5.2 — same family as Devin's GLM-5.2 High", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
     ],
   },
   {
@@ -323,6 +363,35 @@ export const PROVIDERS: ProviderDef[] = [
       { id: "gpt-4o", name: "GPT-4o via Copilot", contextWindow: 128_000, bestFor: "Best overall through your Copilot plan", paid: false },
       { id: "claude-sonnet-4", name: "Claude Sonnet 4 via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
       { id: "gemini-2.0-flash-001", name: "Gemini 2.0 Flash via Copilot", contextWindow: 1_000_000, bestFor: "Huge context through your Copilot plan", paid: false },
+    ],
+  },
+  {
+    id: "zhipu",
+    name: "Zhipu AI (GLM)",
+    description:
+      "GLM-5.3, GLM-5.1 — powerful Chinese AI models with strong agentic and tool-use capabilities. OpenAI-compatible API. Paste your API key from open.bigmodel.cn (China) or z.ai (international).",
+    authMethod: "api_key",
+    protocol: "openai",
+    validateApiKey: validateZhipu,
+    models: [
+      { id: "glm-5.3", name: "GLM-5.3 (128K)", contextWindow: 128_000, bestFor: "Latest flagship, strong agentic tasks and tool use", paid: true, pricing: { inputPerMTokUsd: 0.5, outputPerMTokUsd: 1.5 } },
+      { id: "glm-5.2", name: "GLM-5.2 (128K)", contextWindow: 128_000, bestFor: "Powerful reasoning, same family as Devin's GLM-5.2 High", paid: true, pricing: { inputPerMTokUsd: 0.4, outputPerMTokUsd: 1.2 } },
+      { id: "glm-5.1", name: "GLM-5.1 (128K)", contextWindow: 128_000, bestFor: "Balanced reasoning, cost-effective", paid: true, pricing: { inputPerMTokUsd: 0.25, outputPerMTokUsd: 0.75 } },
+    ],
+  },
+  {
+    id: "cognition",
+    name: "Cognition (Devin)",
+    description:
+      "Devin agentic sessions powered by GLM-5.2 High. Unlike other providers, Devin runs autonomously — it can use shell, files, web search, and spawn sub-agents to complete complex multi-step tasks. Paste your Devin API key (cog_...) and organization ID (org-...) from settings.devin.ai.",
+    authMethod: "api_key",
+    // Devin uses a session API, not chat completions — but we set "openai" here
+    // so the credential route accepts it. The runner dispatches via callDevinSession()
+    // instead of callOpenAICompatible() based on the model's `agentic` flag.
+    protocol: "openai",
+    validateApiKey: validateCognition,
+    models: [
+      { id: "devin-glm-5.2-high", name: "Devin (GLM-5.2 High, agentic)", contextWindow: 200_000, bestFor: "Autonomous multi-step tasks: deep research, complex analysis, sub-agent orchestration", paid: true, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 }, agentic: true },
     ],
   },
 ];

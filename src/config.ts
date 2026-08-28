@@ -81,8 +81,25 @@ export function loadConfig(): Config {
     oauthClients,
     outcomesEnabled: optional("AGENT_OUTCOMES_ENABLED") !== "false",
     schedulerEnabled: optional("AGENT_SCHEDULER_ENABLED") !== "false",
-    defaultMonthlyBudgetMicroUsd: Number(
-      optional("AGENT_DEFAULT_MONTHLY_BUDGET_MICRO_USD") ?? 5_000_000,
+    defaultMonthlyBudgetMicroUsd: parseBudgetMicroUsd(
+      optional("AGENT_DEFAULT_MONTHLY_BUDGET_MICRO_USD"),
     ),
   };
+}
+
+/**
+ * Parses the default monthly budget env var. `Number("abc")` is `NaN` and
+ * `Number("")` is `0` — both silently disable or over-restrict the budget
+ * gate. Validate explicitly so misconfiguration fails fast at startup.
+ */
+function parseBudgetMicroUsd(raw: string | null): number {
+  const fallback = 5_000_000; // $5/month in micro-USD
+  if (raw === null || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `AGENT_DEFAULT_MONTHLY_BUDGET_MICRO_USD must be a positive finite number, got: ${raw}`,
+    );
+  }
+  return parsed;
 }

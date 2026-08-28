@@ -20,6 +20,7 @@ const createTaskSchema = z.object({
   prompt: z.string().min(1).max(8000),
   suggestion_id: z.string().min(1).optional(),
   metadata: z.record(z.unknown()).optional().default({}),
+  tier: z.enum(["basic", "premium"]).optional().default("basic"),
 });
 
 // Per-workspace rate limit: max 5 concurrent running tasks, max 20 per hour.
@@ -34,15 +35,21 @@ function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: strin
   const now = Date.now();
   const hourAgo = now - 60 * 60 * 1000;
 
-  // Concurrent check
+  // Concurrent check — increment atomically here (before any await) so that
+  // concurrent requests cannot all pass the check before any of them
+  // increments. If the caller later fails (e.g. createTask throws), it must
+  // call refundConcurrentSlot to decrement.
   const running = runningTaskCount.get(workspaceId) ?? 0;
   if (running >= MAX_CONCURRENT) {
     return { allowed: false, reason: `too many concurrent tasks (max ${MAX_CONCURRENT})` };
   }
+  runningTaskCount.set(workspaceId, running + 1);
 
   // Hourly check
   const timestamps = (taskTimestamps.get(workspaceId) ?? []).filter((t) => t > hourAgo);
   if (timestamps.length >= MAX_PER_HOUR) {
+    // Refund the concurrent slot we just claimed — hourly limit blocks this request.
+    runningTaskCount.set(workspaceId, running);
     return { allowed: false, reason: `rate limit exceeded (max ${MAX_PER_HOUR}/hour)` };
   }
 
@@ -74,11 +81,12 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-function trackTaskStart(workspaceId: string): void {
-  runningTaskCount.set(workspaceId, (runningTaskCount.get(workspaceId) ?? 0) + 1);
+function trackTaskEnd(workspaceId: string): void {
+  const current = runningTaskCount.get(workspaceId) ?? 0;
+  runningTaskCount.set(workspaceId, Math.max(0, current - 1));
 }
 
-function trackTaskEnd(workspaceId: string): void {
+function refundConcurrentSlot(workspaceId: string): void {
   const current = runningTaskCount.get(workspaceId) ?? 0;
   runningTaskCount.set(workspaceId, Math.max(0, current - 1));
 }
@@ -181,17 +189,18 @@ export function registerTaskRoutes(
 
     let task;
     try {
-      task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata, opts.instanceId);
+      task = await createTask(opts.pool, workspaceId, template_id, model_id, prompt, metadata, opts.instanceId, parsed.data.tier);
     } catch (err) {
-      // DB insert failed — refund the exact rate-limit slot so the client
-      // isn't penalised. Pass the stamp to remove the right entry, not
-      // whatever happens to be last (another request may have pushed since).
+      // DB insert failed — refund the concurrent slot and the hourly stamp
+      // so the client isn't penalised for a server-side failure.
+      refundConcurrentSlot(workspaceId);
       refundRateLimit(workspaceId, rateStamp);
       throw err;
     }
 
-    // Fire and forget — the task runs in the background
-    trackTaskStart(workspaceId);
+    // Fire and forget — the task runs in the background.
+    // Note: the concurrent count was already incremented in checkRateLimit
+    // (before any await) to close the race window.
     const taskPromise = runTask({
       pool: opts.pool,
       taskId: task.id,
@@ -205,6 +214,7 @@ export function registerTaskRoutes(
       fallbackGoogleKey: opts.fallbackGoogleKey,
       fallbackGroqKey: opts.fallbackGroqKey,
       outcomesEnabled: opts.outcomesEnabled,
+      tier: parsed.data.tier,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
     }).finally(() => {

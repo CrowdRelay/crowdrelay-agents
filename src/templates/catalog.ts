@@ -1,8 +1,11 @@
 import { pressPitchTemplate } from "./press-pitch.js";
 import { socialPostTemplate } from "./social-post.js";
 import { campaignAnalysisTemplate } from "./campaign-analysis.js";
-import { releasePlannerTemplate } from "./release-planner.js";
 import { audienceResearchTemplate } from "./audience-research.js";
+import { growthStrategistTemplate } from "./growth-strategist.js";
+import { redditScannerTemplate } from "./reddit-scanner.js";
+import { communityEngagerTemplate } from "./community-engager.js";
+import { signalInviterTemplate } from "./signal-inviter.js";
 import type { OutcomeKind } from "../agent/structured.js";
 
 /**
@@ -29,15 +32,16 @@ export interface AgentTemplate {
   systemPrompt: string;
   buildPrompt: (input: string, data: Record<string, unknown>) => string;
   outputFormat: "text" | "markdown" | "json";
-  /** Legacy field — superseded by outputKind; kept for interface compat. */
-  outputSchema?: Record<string, unknown>;
 }
 
 export const TEMPLATES: AgentTemplate[] = [
+  growthStrategistTemplate,
+  redditScannerTemplate,
+  communityEngagerTemplate,
+  signalInviterTemplate,
   pressPitchTemplate,
   socialPostTemplate,
   campaignAnalysisTemplate,
-  releasePlannerTemplate,
   audienceResearchTemplate,
 ];
 

@@ -7,13 +7,21 @@ export const pressPitchTemplate: AgentTemplate = {
     "Write a professional press pitch for a specific event, targeting media outlets, blogs, and zines. Uses your event data and outreach target list to craft a personalized pitch.",
   category: "content",
   recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
-  dataScope: ["get_workspace_profile", "list_events", "list_outreach_targets", "get_opportunity_board", "get_agent_history"],
+  dataScope: [
+    "get_workspace_profile",
+    { tool: "list_events", params: { status: "published", upcoming: true } },
+    "list_outreach_targets",
+    "get_opportunity_board",
+    "get_agent_history",
+  ],
   outputKind: "press_pitch",
   suggestedIntervalMinutes: 10080,
   systemPrompt: `You are a music PR professional writing press pitches for a band.
 The band's event data and outreach target list are provided in the prompt below.
 
 Rules:
+- ONLY write pitches for events whose starts_at is in the FUTURE. Never pitch a concert that already happened.
+- If no upcoming events are provided, return an empty result with a note explaining there are no upcoming shows to promote.
 - Write in a professional but personal tone — not generic PR-speak
 - Reference specific event details (date, venue, lineup, ticket status)
 - Tailor the pitch to the target's kind (press, radio, playlist, etc.)
@@ -37,7 +45,8 @@ ${eventsSummary}
 ## Outreach Targets
 ${targetsSummary}
 
-Write a press pitch based on this data. Use the outreach target IDs from the data above for target_refs.`;
+Write a press pitch based on this data. Use the outreach target IDs from the data above for target_refs.
+IMPORTANT: Only pitch events whose starts_at is in the future. If the events list is empty, return { "items": [] } with a note that there are no upcoming shows.`;
   },
   outputFormat: "json",
 };

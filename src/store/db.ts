@@ -7,7 +7,7 @@ export type DbPool = pg.Pool;
 export function createPool(databaseUrl: string): DbPool {
   return new Pool({
     connectionString: databaseUrl,
-    max: 5,
+    max: Number(process.env.AGENT_DB_POOL_MAX) || 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });
@@ -41,6 +41,14 @@ export async function runMigrations(pool: DbPool): Promise<void> {
     `ALTER TABLE agent_service_tasks ADD COLUMN IF NOT EXISTS instance_id TEXT`,
     `CREATE INDEX IF NOT EXISTS agent_service_tasks_instance_idx
       ON agent_service_tasks (instance_id) WHERE status IN ('running', 'queued')`,
+    // Sprint 6: intelligent token optimization — tier classification so the
+    // runner can route basic tasks to free models and premium tasks to
+    // connected paid providers. cost_micro_usd tracks per-task spend.
+    `ALTER TABLE agent_service_tasks ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'basic' CHECK (tier IN ('basic', 'premium'))`,
+    `ALTER TABLE agent_service_tasks ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0`,
+    `ALTER TABLE agent_service_tasks ADD COLUMN IF NOT EXISTS model_provider TEXT`,
+    `CREATE INDEX IF NOT EXISTS agent_service_tasks_tier_idx
+      ON agent_service_tasks (workspace_id, tier, created_at DESC) WHERE tier = 'premium'`,
     `CREATE TABLE IF NOT EXISTS agent_service_results (
       id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       task_id         UUID NOT NULL REFERENCES agent_service_tasks(id) ON DELETE CASCADE,
@@ -145,6 +153,67 @@ export async function runMigrations(pool: DbPool): Promise<void> {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (workspace_id, template_id)
     )`,
+    // Workflow orchestration: a brain agent produces a growth plan, which
+    // the dispatcher turns into sub-tasks. Each sub-task is a regular
+    // agent_service_tasks row linked back to the workflow.
+    `CREATE TABLE IF NOT EXISTS agent_service_workflows (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id    UUID NOT NULL,
+      brain_template  TEXT NOT NULL,
+      brain_model     TEXT,
+      status          TEXT NOT NULL DEFAULT 'planning'
+                      CHECK (status IN ('planning','dispatching','running','completed','failed')),
+      plan            JSONB,
+      parent_task_id  UUID REFERENCES agent_service_tasks(id) ON DELETE SET NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at    TIMESTAMPTZ
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_service_workflows_workspace_idx
+      ON agent_service_workflows (workspace_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS agent_service_workflows_status_idx
+      ON agent_service_workflows (status) WHERE status IN ('planning','dispatching','running')`,
+    // One brain task can only spawn one workflow. Prevents the duplicate
+    // creation bug from producing orphaned records.
+    `CREATE UNIQUE INDEX IF NOT EXISTS agent_service_workflows_parent_task_idx
+      ON agent_service_workflows (parent_task_id) WHERE parent_task_id IS NOT NULL`,
+    `CREATE TABLE IF NOT EXISTS agent_service_workflow_tasks (
+      workflow_id     UUID NOT NULL REFERENCES agent_service_workflows(id) ON DELETE CASCADE,
+      task_id         UUID NOT NULL REFERENCES agent_service_tasks(id) ON DELETE CASCADE,
+      slot            INT NOT NULL,
+      role            TEXT NOT NULL CHECK (role IN ('brain','muscle')),
+      PRIMARY KEY (workflow_id, task_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_service_workflow_tasks_workflow_idx
+      ON agent_service_workflow_tasks (workflow_id, slot)`,
+    // Sprint 6.12: Discovered free models. A periodic poller fetches the
+    // public model catalogs from OpenRouter (and optionally OpenCode Zen)
+    // and upserts free-tier models here. The runner reads this table to
+    // augment the hardcoded MODELS fallback chain, so new free models
+    // appear automatically without a code deploy.
+    `CREATE TABLE IF NOT EXISTS agent_service_discovered_models (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      source          TEXT NOT NULL,  -- 'openrouter' | 'opencode-zen'
+      model_id        TEXT NOT NULL,  -- e.g. 'z-ai/glm-5.2:free'
+      name            TEXT NOT NULL,
+      context_window  INTEGER NOT NULL DEFAULT 128000,
+      pricing_prompt  TEXT NOT NULL DEFAULT '0',
+      pricing_completion TEXT NOT NULL DEFAULT '0',
+      discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (source, model_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS agent_service_discovered_models_source_idx
+      ON agent_service_discovered_models (source, last_seen_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS agent_service_discovered_models_last_seen_idx
+      ON agent_service_discovered_models (last_seen_at DESC)`,
+    // Sprint 6 audit: missing indexes for hot query paths
+    // Schedule ticker scans next_run_at every 60s — needs an index for the
+    // FOR UPDATE SKIP LOCKED claim query.
+    `CREATE INDEX IF NOT EXISTS agent_service_schedules_next_run_idx
+      ON agent_service_schedules (next_run_at) WHERE enabled = true`,
+    // Result lookup sorts by created_at DESC — covering index avoids sort.
+    `CREATE INDEX IF NOT EXISTS agent_service_results_task_created_idx
+      ON agent_service_results (task_id, created_at DESC)`,
   ];
 
   for (const sql of statements) {

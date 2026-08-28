@@ -55,6 +55,10 @@ export async function callAnthropic(params: {
   const textBlock = data.content?.find((b) => b.type === "text");
   const content = textBlock?.text ?? "";
 
+  if (!content || content.trim().length === 0) {
+    throw new Error("Anthropic returned empty content (model produced no output)");
+  }
+
   return {
     content,
     tokensIn: data.usage?.input_tokens ?? null,

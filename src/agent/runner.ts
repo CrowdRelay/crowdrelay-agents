@@ -1,16 +1,19 @@
 import type { DbPool } from "../store/db.js";
 import type { AgentTemplate } from "../templates/catalog.js";
 import { PROVIDERS, type ProviderDef, type ProviderModel } from "../providers/registry.js";
-import { getConnectedProviders, getCredential } from "../store/credentials.js";
+import { getConnectedProviders, getCredential, getOAuthCredentialRow } from "../store/credentials.js";
 import { updateTaskStatus, setTaskMetadata } from "../store/tasks.js";
 import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
 import { callAnthropic } from "./anthropic.js";
+import { callDevinSession } from "./cognition.js";
 import { ensureFreshToken } from "../providers/oauth/refresh.js";
 import { buildContext, renderContextSections } from "./context.js";
 import { parseOutcome, outputContractText, type OutcomeKind } from "./structured.js";
 import { emitOutcomes } from "./outcomes.js";
 import { recordUsage } from "./usage.js";
 import { verifyOutcome, type VerifyResult } from "./verify.js";
+import { PREMIUM_MODELS, availablePremiumModels, estimatePremiumCostMicroUsd } from "./models.js";
+import { getDiscoveredFreeModels, type DiscoveredModel } from "./discovery.js";
 
 import { PROVIDER_ENDPOINTS } from "./endpoints.js";
 
@@ -28,6 +31,8 @@ export interface RunConfig {
   fallbackGroqKey: string | null;
   /** Kill switch: when false, results are stored but no outcomes are emitted. */
   outcomesEnabled: boolean;
+  /** Intelligent token optimization: "basic" uses free models, "premium" routes to connected paid providers. */
+  tier: "basic" | "premium";
 }
 
 interface ChainEntry {
@@ -113,22 +118,31 @@ export async function runTask(config: RunConfig): Promise<void> {
     }`;
 
     // 3. Resolve model + credential chain
-    const modelChain = await resolveModelChain(config);
+    // For premium tasks, try connected premium providers first. If none are
+    // connected or all fail, fall through to the basic chain — premium never
+    // blocks, it degrades gracefully.
+    let modelChain = config.tier === "premium"
+      ? await resolvePremiumChain(config)
+      : [];
+    const usedPremiumFallback = modelChain.length === 0;
+    if (usedPremiumFallback) {
+      console.log(`Task ${taskId} is premium but no premium credentials connected — falling back to basic chain`);
+      modelChain = await resolveModelChain(config);
+    }
     let response: LlmResponse | null = null;
     let lastError: string | null = null;
     let modelUsed = "";
+    let costMicroUsd = 0;
     const attempts: AttemptRecord[] = [];
     let verificationResult: VerifyResult | null = null;
 
     // Resolve a free-tier verifier model — the gate must not add cost.
     const verifierEntry = await resolveVerifier(config);
 
-    // Total budget for the entire fallback chain. Each individual LLM call
-    // has its own 120s timeout, but without a chain-level deadline the
-    // background task could run for 5–10 minutes across all fallbacks,
-    // exceeding the graceful-shutdown window and burning free-tier quota.
-    // Verification calls are cheap and fast, but they share the same budget.
-    const CHAIN_DEADLINE_MS = 180_000;
+    // Total budget for the entire fallback chain. Premium agentic sessions
+    // (Devin) get a longer deadline since they run autonomously.
+    const hasAgentic = modelChain.some((e) => (e.model as ProviderModel & { agentic?: boolean }).agentic);
+    const CHAIN_DEADLINE_MS = hasAgentic ? 360_000 : 180_000;
     const chainStart = Date.now();
 
     for (const entry of modelChain) {
@@ -138,11 +152,19 @@ export async function runTask(config: RunConfig): Promise<void> {
         break;
       }
       try {
-        const candidate = await callLLM(entry, systemPrompt, userPrompt, outputKind !== undefined);
-        const costMicroUsd = await recordUsage(pool, workspaceId, entry.provider.id, entry.model, {
-          tokensIn: candidate.tokensIn,
-          tokensOut: candidate.tokensOut,
-        });
+        // Agentic models (Devin) use a session API instead of chat completions.
+        // The session runs autonomously with shell/file/web/sub-agent access.
+        const isAgentic = (entry.model as ProviderModel & { agentic?: boolean }).agentic === true;
+        const candidate = isAgentic
+          ? await callAgenticSession(entry, config, systemPrompt + "\n\n" + userPrompt)
+          : await callLLM(entry, systemPrompt, userPrompt, outputKind !== undefined);
+        const entryCost = isAgentic
+          ? 0  // Agentic sessions (Devin) are free for subscribers
+          : await recordUsage(pool, workspaceId, entry.provider.id, entry.model, {
+              tokensIn: candidate.tokensIn,
+              tokensOut: candidate.tokensOut,
+            });
+        costMicroUsd += entryCost;
 
         // For structured outcomes, run the verification gate before
         // accepting this model's response. If the verifier rejects it,
@@ -171,7 +193,7 @@ export async function runTask(config: RunConfig): Promise<void> {
                 provider: entry.provider.id,
                 model: entry.model.id,
                 ok: true,
-                cost_micro_usd: costMicroUsd,
+                cost_micro_usd: entryCost,
                 verified: "rejected",
                 verification_issues: verificationResult.issues,
               });
@@ -186,7 +208,7 @@ export async function runTask(config: RunConfig): Promise<void> {
           provider: entry.provider.id,
           model: entry.model.id,
           ok: true,
-          cost_micro_usd: costMicroUsd,
+          cost_micro_usd: entryCost,
           verified: verificationResult?.passed ? "passed" : undefined,
         });
         break;
@@ -287,7 +309,20 @@ export async function runTask(config: RunConfig): Promise<void> {
             verifier_error: verificationResult.verifierError,
           }
         : null,
+      tier: config.tier,
+      premium_fallback: usedPremiumFallback,
     });
+
+    // Record the total cost on the task row for budget tracking.
+    // Use the model that was actually accepted (modelUsed), not the first
+    // model that returned ok — a rejected response is not the final answer.
+    if (costMicroUsd > 0) {
+      const acceptedAttempt = attempts.find((a) => a.model === modelUsed);
+      await pool.query(
+        `UPDATE agent_service_tasks SET cost_micro_usd = $2, model_provider = $3 WHERE id = $1`,
+        [taskId, costMicroUsd, acceptedAttempt?.provider ?? null],
+      );
+    }
 
     await updateTaskStatus(pool, taskId, "completed");
   } catch (err) {
@@ -314,13 +349,17 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
   const { pool, workspaceId, modelId, encryptionKey, previousEncryptionKey } = config;
   const chain: ChainEntry[] = [];
   const connectedProviders = await getConnectedProviders(pool, workspaceId);
+  // Per-task credential cache: the same provider's key is queried many times
+  // during chain resolution. Without this, each candidate model triggers a
+  // separate DB/OAuth call — an N+1 on the credentials table.
+  const credentialCache = new Map<string, string | null | undefined>();
 
   const requested = findProviderForModel(modelId);
 
   // 1. Requested model first. OAuth credentials go through ensureFreshToken
   //    (which refreshes or re-derives as needed); plain keys decrypt directly.
   if (requested) {
-    const key = await resolveApiKey(requested.provider, config, connectedProviders);
+    const key = await resolveApiKey(requested.provider, config, connectedProviders, credentialCache);
     if (key !== undefined) {
       chain.push({ provider: requested.provider, model: requested.model, apiKey: key });
     }
@@ -336,7 +375,7 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
     if (seen.has(fallbackId)) continue;
     const entry = findProviderForModel(fallbackId);
     if (!entry) continue;
-    const key = await resolveApiKey(entry.provider, config, connectedProviders);
+    const key = await resolveApiKey(entry.provider, config, connectedProviders, credentialCache);
     if (key !== undefined) {
       chain.push({ provider: entry.provider, model: entry.model, apiKey: key });
       seen.add(fallbackId);
@@ -347,7 +386,7 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
   for (const provider of PROVIDERS) {
     for (const model of provider.models) {
       if (model.paid || seen.has(model.id)) continue;
-      const key = await resolveApiKey(provider, config, connectedProviders);
+      const key = await resolveApiKey(provider, config, connectedProviders, credentialCache);
       if (key !== undefined) {
         chain.push({ provider, model, apiKey: key });
         seen.add(model.id);
@@ -355,7 +394,155 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
     }
   }
 
+  // 4. Discovered free models from the periodic discovery poller. These are
+  //    new free-tier models that OpenRouter or Zen added since the last code
+  //    deploy. They're upserted into agent_service_discovered_models by the
+  //    cron ticker in server.ts. We add them at the end of the fallback chain
+  //    so the known-good hardcoded models are tried first.
+  try {
+    const discovered = await getDiscoveredFreeModels(config.pool);
+    for (const dm of discovered) {
+      if (seen.has(dm.model_id)) continue;
+      // Map the discovered model to its provider. OpenRouter models use the
+      // 'openrouter' provider; Zen models use 'opencode-zen'.
+      const providerId = dm.source === "openrouter" ? "openrouter" : "opencode-zen";
+      const provider = PROVIDERS.find((p) => p.id === providerId);
+      if (!provider) continue;
+      // Only add if we have a credential for this provider (or it's free-tier)
+      const key = await resolveApiKey(provider, config, connectedProviders, credentialCache);
+      if (key === undefined) continue;
+      // Construct a synthetic ProviderModel for the discovered model
+      const syntheticModel: ProviderModel = {
+        id: dm.model_id,
+        name: dm.name,
+        contextWindow: dm.context_window,
+        bestFor: "Discovered free model",
+        paid: false,
+      };
+      chain.push({ provider, model: syntheticModel, apiKey: key });
+      seen.add(dm.model_id);
+    }
+  } catch (err) {
+    // Discovery table might not exist yet on first boot — fail silently
+    console.error("failed to load discovered models:", err);
+  }
+
   return chain;
+}
+
+/**
+ * Resolves the premium model chain for intelligent token optimization.
+ * Returns connected premium providers' models, ordered by:
+ * 1. Agentic models (Devin) first — best for complex multi-step tasks
+ * 2. Template recommended models that are premium
+ * 3. Other premium models from connected providers
+ *
+ * Returns an empty chain if no premium credentials are connected — the
+ * caller falls back to the basic chain in that case.
+ */
+async function resolvePremiumChain(config: RunConfig): Promise<ChainEntry[]> {
+  const { pool, workspaceId, encryptionKey, previousEncryptionKey } = config;
+  const connectedProviders = await getConnectedProviders(pool, workspaceId);
+  const premiumModels = availablePremiumModels(connectedProviders);
+
+  if (premiumModels.length === 0) {
+    return [];
+  }
+
+  const chain: ChainEntry[] = [];
+  const seen = new Set<string>();
+  const credentialCache = new Map<string, string | null | undefined>();
+
+  // 1. Agentic models first (Devin) — best for complex multi-step tasks.
+  for (const pm of premiumModels) {
+    if (!pm.agentic) continue;
+    const provider = PROVIDERS.find((p) => p.id === pm.provider);
+    if (!provider) continue;
+    const model = provider.models.find((m) => m.id === pm.id);
+    if (!model) continue;
+    const key = await resolveApiKey(provider, config, connectedProviders, credentialCache);
+    if (key !== undefined) {
+      chain.push({ provider, model, apiKey: key });
+      seen.add(`${pm.provider}:${pm.id}`);
+    }
+  }
+
+  // 2. Template recommended models that are premium.
+  for (const fallbackId of config.template.recommendedModels) {
+    const pm = premiumModels.find((m) => m.id === fallbackId);
+    if (!pm || seen.has(`${pm.provider}:${pm.id}`)) continue;
+    const provider = PROVIDERS.find((p) => p.id === pm.provider);
+    if (!provider) continue;
+    const model = provider.models.find((m) => m.id === pm.id);
+    if (!model) continue;
+    const key = await resolveApiKey(provider, config, connectedProviders, credentialCache);
+    if (key !== undefined) {
+      chain.push({ provider, model, apiKey: key });
+      seen.add(`${pm.provider}:${pm.id}`);
+    }
+  }
+
+  // 3. Other premium models from connected providers (by cost: cheapest first).
+  const remaining = premiumModels
+    .filter((pm) => !seen.has(`${pm.provider}:${pm.id}`))
+    .sort((a, b) => (a.priceInputPerMTok + a.priceOutputPerMTok) - (b.priceInputPerMTok + b.priceOutputPerMTok));
+  for (const pm of remaining) {
+    const provider = PROVIDERS.find((p) => p.id === pm.provider);
+    if (!provider) continue;
+    const model = provider.models.find((m) => m.id === pm.id);
+    if (!model) continue;
+    const key = await resolveApiKey(provider, config, connectedProviders, credentialCache);
+    if (key !== undefined) {
+      chain.push({ provider, model, apiKey: key });
+      seen.add(`${pm.provider}:${pm.id}`);
+    }
+  }
+
+  return chain;
+}
+
+/**
+ * Calls a Devin agentic session. The session runs autonomously with shell,
+ * file, web, and sub-agent access. The runner creates the session, polls for
+ * completion, and extracts the final message.
+ *
+ * The org ID is stored in the `provider_account` column of the credential.
+ */
+async function callAgenticSession(
+  entry: ChainEntry,
+  config: RunConfig,
+  fullPrompt: string,
+): Promise<LlmResponse> {
+  if (entry.provider.id !== "cognition") {
+    throw new Error(`Agentic sessions not supported for provider: ${entry.provider.id}`);
+  }
+  if (!entry.apiKey) {
+    throw new Error("No API key for Cognition/Devin");
+  }
+
+  // The org ID is stored in the provider_account column of the credential.
+  const credRow = await getOAuthCredentialRow(
+    config.pool,
+    config.workspaceId,
+    entry.provider.id,
+    config.encryptionKey,
+    config.previousEncryptionKey,
+  );
+  const orgId = credRow?.providerAccount;
+  if (!orgId) {
+    throw new Error("No organization ID found for Cognition/Devin credential");
+  }
+
+  const start = Date.now();
+  const result = await callDevinSession(entry.apiKey, orgId, fullPrompt, 300_000);
+  const durationMs = Date.now() - start;
+
+  return {
+    content: result.content,
+    tokensIn: 0,   // Devin sessions don't report token usage
+    tokensOut: 0,
+    durationMs,
+  };
 }
 
 /**
@@ -401,11 +588,21 @@ async function resolveApiKey(
   provider: ProviderDef,
   config: RunConfig,
   connectedProviders: string[],
+  credentialCache?: Map<string, string | null | undefined>,
 ): Promise<string | null | undefined> {
+  // Check cache first — the same provider's credential is queried many times
+  // during chain resolution (requested, recommended, free-tier, discovered).
+  // Without this, each candidate model triggers a separate DB/OAuth call.
+  if (credentialCache) {
+    const cached = credentialCache.get(provider.id);
+    if (cached !== undefined) return cached;
+  }
+
   // Free tier — no key needed
   if (provider.authMethod === "none" || provider.freeTier) {
-    if (provider.id === "opencode-zen") return config.zenToken;
-    return null;
+    const result = provider.id === "opencode-zen" ? config.zenToken : null;
+    credentialCache?.set(provider.id, result);
+    return result;
   }
 
   if (connectedProviders.includes(provider.id)) {
@@ -421,24 +618,46 @@ async function resolveApiKey(
       console.error(`token resolution for ${provider.id} failed:`, err);
       return null;
     });
-    if (resolved) return resolved.token;
+    if (resolved) {
+      credentialCache?.set(provider.id, resolved.token);
+      return resolved.token;
+    }
 
-    // Fall back to a plain stored key (providers support both paste + OAuth).
-    const cred = await getCredential(
-      config.pool,
-      config.workspaceId,
-      provider.id,
-      config.encryptionKey,
-      config.previousEncryptionKey,
-    );
-    return cred?.decryptedValue ?? undefined;
+    // Only fall back to the raw stored credential for api_key providers.
+    // For OAuth/refresh_token providers, the encrypted_value is the refresh
+    // token — returning it as a bearer would leak it and guarantee a 401.
+    if (provider.authMethod === "api_key") {
+      const cred = await getCredential(
+        config.pool,
+        config.workspaceId,
+        provider.id,
+        config.encryptionKey,
+        config.previousEncryptionKey,
+      );
+      const result = cred?.decryptedValue ?? undefined;
+      credentialCache?.set(provider.id, result);
+      return result;
+    }
+
+    // OAuth refresh failed — skip this provider rather than leak the refresh token.
+    credentialCache?.set(provider.id, undefined);
+    return undefined;
   }
 
   // Platform-level env defaults. Return undefined (not null) when absent so
   // the chain skips this provider instead of attempting a keyless call.
-  if (provider.id === "google") return config.fallbackGoogleKey ?? undefined;
-  if (provider.id === "groq") return config.fallbackGroqKey ?? undefined;
+  if (provider.id === "google") {
+    const result = config.fallbackGoogleKey ?? undefined;
+    credentialCache?.set(provider.id, result);
+    return result;
+  }
+  if (provider.id === "groq") {
+    const result = config.fallbackGroqKey ?? undefined;
+    credentialCache?.set(provider.id, result);
+    return result;
+  }
 
+  credentialCache?.set(provider.id, undefined);
   return undefined;
 }
 

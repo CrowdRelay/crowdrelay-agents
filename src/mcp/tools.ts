@@ -1,5 +1,15 @@
 import type { DbPool } from "../store/db.js";
 
+/** Reddit subreddit search response shape (only the fields we use). */
+interface RedditSubData {
+  display_name_prefixed: string;
+  url: string;
+  title: string;
+  public_description: string;
+  subscribers: number | null;
+  over18: boolean;
+}
+
 /** Masks an email for LLM consumption: ab.cd@domain.tld → ab***@domain.tld.
  *  The model never needs a raw address — the autopilot resolves recipients. */
 export function maskEmail(email: string | null): string | null {
@@ -22,9 +32,10 @@ function maskRowEmails<T extends Record<string, unknown>>(row: T, keys: string[]
 }
 
 /**
- * MCP tool definitions. Each tool is a read-only Postgres query scoped to
- * a single workspace_id. The LLM calls these during a session to pull
- * tenant data for seeding its prompt.
+ * MCP tool definitions. Most tools are read-only Postgres queries scoped to
+ * a single workspace_id. The `search_reddit_communities` tool is the first
+ * that makes an external HTTP call (to Reddit's public search API); it does
+ * not touch the database and does not require authentication.
  */
 
 export interface McpTool {
@@ -45,6 +56,11 @@ export const tools: McpTool[] = [
         description: "Filter by event status: 'published', 'completed', or 'all' (default: 'published')",
         required: false,
       },
+      upcoming: {
+        type: "boolean",
+        description: "Only return events whose starts_at is in the future (default: false)",
+        required: false,
+      },
       limit: {
         type: "number",
         description: "Max events to return (default: 10, max: 50)",
@@ -53,15 +69,27 @@ export const tools: McpTool[] = [
     },
     async execute(pool, workspaceId, params) {
       const status = (params.status as string) ?? "published";
+      const upcoming = params.upcoming === true || params.upcoming === "true";
       const rawLimit = Number(params.limit) || 10;
       const limit = Math.max(1, Math.min(rawLimit, 50));
       const validStatuses = ["published", "completed", "all"];
       const safeStatus = validStatuses.includes(status) ? status : "published";
-      const statusFilter = safeStatus === "all" ? "IN ('published','completed')" : "= $2";
+      const conditions: string[] = ["e.workspace_id = $1"];
       const args: unknown[] = [workspaceId];
-      if (safeStatus !== "all") args.push(safeStatus);
+      let paramIdx = 2;
+      if (safeStatus === "all") {
+        conditions.push("e.status IN ('published','completed')");
+      } else {
+        conditions.push(`e.status = $${paramIdx}`);
+        args.push(safeStatus);
+        paramIdx++;
+      }
+      if (upcoming) {
+        conditions.push("e.starts_at > now()");
+      }
       args.push(limit);
-      const limitParam = `$${args.length}`;
+      const limitParam = `$${paramIdx}`;
+      const where = conditions.join(" AND ");
       const { rows } = await pool.query(
         `SELECT e.id, e.title, e.slug, e.starts_at, e.status,
                 (SELECT count(*)::int FROM event_interests ei WHERE ei.event_id = e.id) AS interested_fans,
@@ -70,8 +98,8 @@ export const tools: McpTool[] = [
                  JOIN ticket_sales ts ON ts.id = tord.ticket_sale_id
                  WHERE ts.event_id = e.id AND tord.status IN ('paid','partially_refunded')) AS paid_buyers
          FROM events e
-         WHERE e.workspace_id = $1 AND e.status ${statusFilter}
-         ORDER BY e.starts_at DESC
+         WHERE ${where}
+         ORDER BY e.starts_at ${upcoming ? "ASC" : "DESC"}
          LIMIT ${limitParam}`,
         args,
       );
@@ -273,53 +301,6 @@ export const tools: McpTool[] = [
     },
   },
   {
-    name: "outreach_wave_status",
-    description:
-      "Get outreach wave status — how many waves are drafting, active, or settled, and their target counts.",
-    parameters: {},
-    async execute(pool, workspaceId) {
-      const { rows } = await pool.query(
-        `SELECT state, target_kind, count(*)::int AS count,
-                sum(capacity)::int AS total_capacity
-         FROM viryaos_outreach_waves
-         WHERE workspace_id = $1
-         GROUP BY state, target_kind
-         ORDER BY state, target_kind`,
-        [workspaceId],
-      );
-      return rows;
-    },
-  },
-  {
-    name: "release_plans",
-    description:
-      "List release plans with their milestones and press/communication status. Helps the LLM write release-related content.",
-    parameters: {},
-    async execute(pool, workspaceId) {
-      const [plans, milestones] = await Promise.all([
-        pool.query(
-          `SELECT id, source_key, title, release_at, active,
-                  assets_ready, communication_enabled, press_enabled, version
-           FROM viryaos_release_plans
-           WHERE workspace_id = $1
-           ORDER BY release_at DESC NULLS LAST
-           LIMIT 10`,
-          [workspaceId],
-        ),
-        pool.query(
-          `SELECT rm.release_plan_id, rm.title, rm.kind, rm.target_at, rm.completed_at
-           FROM viryaos_release_milestones rm
-           JOIN viryaos_release_plans rp ON rp.id = rm.release_plan_id
-           WHERE rp.workspace_id = $1
-           ORDER BY rm.target_at DESC NULLS LAST
-           LIMIT 20`,
-          [workspaceId],
-        ),
-      ]);
-      return { plans: plans.rows, milestones: milestones.rows };
-    },
-  },
-  {
     name: "ticket_sales_summary",
     description:
       "Get ticket sales summary by event: total sold, revenue, and remaining capacity. Useful for writing urgency-driven content.",
@@ -342,36 +323,6 @@ export const tools: McpTool[] = [
         [workspaceId],
       );
       return rows;
-    },
-  },
-  {
-    name: "beacon_signal_summary",
-    description:
-      "Get beacon signal coverage and engagement data. Shows where the band has signal presence and fan engagement.",
-    parameters: {},
-    async execute(pool, workspaceId) {
-      const [coverage, engagements] = await Promise.all([
-        pool.query(
-          `SELECT platform, count(*)::int AS profiles,
-                  count(*) FILTER (WHERE active = true)::int AS active_profiles
-           FROM viryaos_beacon_signal_profiles
-           WHERE workspace_id = $1
-           GROUP BY platform
-           ORDER BY profiles DESC`,
-          [workspaceId],
-        ),
-        pool.query(
-          `SELECT event_id, engagement_kind, count(*)::int AS count
-           FROM viryaos_beacon_signal_event_engagements
-           WHERE workspace_id = $1
-             AND created_at > now() - INTERVAL '30 days'
-           GROUP BY event_id, engagement_kind
-           ORDER BY count DESC
-           LIMIT 20`,
-          [workspaceId],
-        ),
-      ]);
-      return { signal_coverage: coverage.rows, recent_engagements: engagements.rows };
     },
   },
   {
@@ -486,19 +437,109 @@ export const tools: McpTool[] = [
     },
   },
   {
-    name: "list_release_campaigns",
-    description: "Active beacon release campaigns the band is currently pushing.",
+    name: "list_community_post_metrics",
+    description:
+      "Get aggregated performance history for community posts (Reddit). Shows average upvotes, comments, and score per subreddit from recent posts. Use this to avoid posting to communities with near-zero engagement and to match what worked in communities that responded well.",
     parameters: {},
     async execute(pool, workspaceId) {
       const { rows } = await pool.query(
-        `SELECT id, title, status, created_at
-         FROM viryaos_beacon_release_campaigns
-         WHERE workspace_id = $1 AND status = 'active'
-         ORDER BY created_at DESC
-         LIMIT 10`,
+        `WITH latest_per_post AS (
+            SELECT DISTINCT ON (cpm.community_post_id)
+                cpm.community_post_id,
+                cpm.score,
+                cpm.upvotes,
+                cpm.num_comments,
+                cpm.upvote_ratio,
+                cp.subreddit
+            FROM community_post_metrics cpm
+            JOIN community_posts cp ON cp.id = cpm.community_post_id
+            WHERE cp.workspace_id = $1
+              AND cp.posted_at > now() - INTERVAL '30 days'
+            ORDER BY cpm.community_post_id, cpm.measured_at DESC
+        )
+        SELECT subreddit,
+               COUNT(*)::int AS post_count,
+               AVG(score)::double precision AS avg_score,
+               AVG(upvotes)::double precision AS avg_upvotes,
+               AVG(num_comments)::double precision AS avg_comments,
+               AVG(upvote_ratio)::double precision AS avg_upvote_ratio
+        FROM latest_per_post
+        GROUP BY subreddit
+        ORDER BY avg_score DESC`,
         [workspaceId],
       );
       return rows;
+    },
+  },
+  {
+    name: "search_reddit_communities",
+    description:
+      "Search Reddit for subreddits matching a query. Returns real subreddit names, subscriber counts, descriptions, and URLs from Reddit's public search API. Use this to find communities where the band could engage — do NOT hallucinate subreddit names.",
+    parameters: {
+      query: {
+        type: "string",
+        description: "Search query (e.g. 'metal polska', 'alternative rock europe', 'doom metal')",
+        required: true,
+      },
+      limit: {
+        type: "number",
+        description: "Max subreddits to return (default: 10, max: 25)",
+        required: false,
+      },
+    },
+    async execute(_pool, _workspaceId, params) {
+      const rawQuery = typeof params.query === "string"
+        ? params.query
+        : params.query != null ? String(params.query) : "";
+      const query = rawQuery.trim();
+      if (!query) {
+        return { error: "query is required", results: [] };
+      }
+      const rawLimit = Number(params.limit ?? 10);
+      const limit = Number.isFinite(rawLimit)
+        ? Math.min(Math.max(1, Math.floor(rawLimit)), 25)
+        : 10;
+      const url = new URL("https://www.reddit.com/subreddits/search.json");
+      url.searchParams.set("q", query);
+      url.searchParams.set("limit", String(limit));
+      url.searchParams.set("sort", "activity");
+
+      try {
+        const response = await fetch(url, {
+          headers: { "User-Agent": "crowdrelay/1.0 agent-service (research)" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) {
+          return { query, error: `Reddit search returned HTTP ${response.status}`, results: [] };
+        }
+        const body = (await response.json()) as {
+          data?: { children?: Array<{ data?: RedditSubData }> };
+        };
+        const children = body.data?.children ?? [];
+        const results = children
+          .map((child) => child.data)
+          .filter(
+            (d): d is RedditSubData =>
+              !!d &&
+              !!d.display_name_prefixed &&
+              !!d.url &&
+              d.over18 !== true,
+          )
+          .map((d) => ({
+            name: d.display_name_prefixed,
+            title: d.title || d.display_name_prefixed,
+            description: (d.public_description || "").slice(0, 500),
+            subscribers: d.subscribers ?? 0,
+            url: `https://www.reddit.com${d.url.replace(/\/$/, "")}`,
+          }));
+        return { query, results };
+      } catch (err) {
+        return {
+          query,
+          error: err instanceof Error ? err.message : String(err),
+          results: [],
+        };
+      }
     },
   },
 ];

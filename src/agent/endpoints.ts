@@ -11,4 +11,7 @@ export const PROVIDER_ENDPOINTS: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
   xai: "https://api.x.ai/v1/chat/completions",
   "github-copilot": "https://api.githubcopilot.com/chat/completions",
+  // Zhipu AI (GLM) — OpenAI-compatible. International endpoint by default;
+  // China endpoint configurable via ZHIPU_API_BASE_URL env var.
+  zhipu: process.env.ZHIPU_API_BASE_URL ?? "https://api.z.ai/api/paas/v4/chat/completions",
 };

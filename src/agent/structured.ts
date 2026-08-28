@@ -16,6 +16,7 @@ export const OUTCOME_SCHEMA_VERSION = 1;
 export const OUTCOME_KINDS = [
   "press_pitch",
   "social_post",
+  "signal_push",
   "audience_segments",
   "outreach_targets",
   "campaign_insight",
@@ -37,12 +38,70 @@ export const PressPitchItem = z.object({
   follow_ups: z.array(z.string().max(300)).max(10).default([]),
 });
 
-export const SocialPostItem = z.object({
-  type: z.literal("social_post"),
-  platform: z.enum(["instagram", "facebook", "x"]),
-  text: z.string().min(1).max(2200),
-  cta_url: z.string().max(500).optional(),
-  suggested_at: isoDate.optional(),
+export const SocialPostItem = z
+  .object({
+    type: z.literal("social_post"),
+    platform: z.enum(["instagram", "facebook", "x", "reddit"]),
+    text: z.string().min(1).max(2200),
+    cta_url: z.string().max(500).optional(),
+    suggested_at: isoDate.optional(),
+    // Community engagement fields (platform === "reddit" only). The
+    // community-engager worker produces posts targeting a specific
+    // subreddit; the Rust worker maps these to RequestCommunityEngagement
+    // autopilot actions (ThirdParty, requires operator approval).
+    target_id: z.string().uuid().max(200).optional(),
+    subreddit: z.string().max(200).optional(),
+    title: z.string().max(300).optional(),
+    body: z.string().max(40000).optional(),
+    smart_link: z.string().max(500).optional(),
+  })
+  .superRefine((item, ctx) => {
+    // When platform is "reddit", the community-engagement fields are
+    // required by the Rust worker's is_community_engagement gate.
+    if (item.platform === "reddit") {
+      if (!item.target_id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["target_id"],
+          message: "target_id is required for reddit community posts",
+        });
+      }
+      if (!item.subreddit) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["subreddit"],
+          message: "subreddit is required for reddit community posts",
+        });
+      }
+      if (!item.title) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["title"],
+          message: "title is required for reddit community posts",
+        });
+      }
+      if (!item.body) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["body"],
+          message: "body is required for reddit community posts",
+        });
+      }
+    }
+  });
+
+export const SignalPushItem = z.object({
+  type: z.literal("signal_push"),
+  // Push notification title (short, displayed in the notification bar).
+  title: z.string().min(1).max(80),
+  // Push notification body (under 200 chars for lock-screen readability).
+  body: z.string().min(1).max(200),
+  // Deep link into the Signal app — typically /events/{id} or /releases/{id}.
+  target_path: z.string().max(500).optional(),
+  // Optional event reference for deduplication and targeting.
+  event_id: z.string().uuid().max(200).optional(),
+  // Optional fan segment name to target (the Rust worker resolves this).
+  segment: z.string().max(120).optional(),
 });
 
 export const FanSegmentItem = z.object({
@@ -51,7 +110,6 @@ export const FanSegmentItem = z.object({
   description: z.string().max(1000).default(""),
   size_estimate: z.number().int().min(0).max(10_000_000).optional(),
   criteria: z.record(z.unknown()).default({}),
-  rationale: z.string().max(1000).default(""),
 });
 
 export const OutreachTargetItem = z.object({
@@ -88,6 +146,7 @@ export const GenericInsightItem = z.object({
 const AnyItem = z.union([
   PressPitchItem,
   SocialPostItem,
+  SignalPushItem,
   FanSegmentItem,
   OutreachTargetItem,
   CampaignInsightItem,
@@ -193,8 +252,9 @@ export function parseOutcome(raw: string): StructuredParseResult {
 export function outputContractText(kind: OutcomeKind): string {
   const itemShapes: Record<OutcomeKind, string> = {
     press_pitch: `{"type":"press_pitch","subject":"...","body":"...","target_refs":["outreach target id"],"suggested_send_at":"YYYY-MM-DD","tone":"...","follow_ups":["..."]}`,
-    social_post: `{"type":"social_post","platform":"instagram|facebook|x","text":"...","cta_url":"...","suggested_at":"YYYY-MM-DD"}`,
-    audience_segments: `{"type":"fan_segment","name":"...","description":"...","size_estimate":123,"criteria":{"source":["..."]},"rationale":"..."}`,
+    social_post: `{"type":"social_post","platform":"instagram|facebook|x|reddit","text":"...","cta_url":"...","suggested_at":"YYYY-MM-DD","target_id":"uuid (reddit only)","subreddit":"r/... (reddit only)","title":"... (reddit only)","body":"... (reddit only)","smart_link":"https://... (reddit only)"}`,
+    signal_push: `{"type":"signal_push","title":"...","body":"... (under 200 chars)","target_path":"/events/{id}","event_id":"uuid","segment":"segment name"}`,
+    audience_segments: `{"type":"fan_segment","name":"...","description":"...","size_estimate":123,"criteria":{"source":["..."]}}`,
     outreach_targets: `{"type":"outreach_target","target_kind":"press|radio|playlist|media_patronage|endorsement|creator","display_name":"...","contact_domain":"example.com","why_fit":"...","evidence_urls":["https://..."]}`,
     campaign_insight: `{"type":"campaign_insight","headline":"...","detail":"...","recommended_action":"..."}`,
     release_plan_note: `{"type":"release_plan_note","headline":"...","detail":"...","recommended_action":"..."}`,

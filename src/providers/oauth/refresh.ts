@@ -33,7 +33,46 @@ export interface ResolvedToken {
 const REFRESH_SKEW_MS = 60_000;
 const SHORT_LIVED_SKEW_MS = 5 * 60_000;
 
+// Per-(workspace, provider) single-flight lock. Without this, concurrent
+// tasks needing the same OAuth credential all read the same refresh token,
+// all call the token endpoint, and providers that rotate refresh tokens
+// invalidate the first one — causing the second refresh to fail with
+// invalid_grant. The lock ensures only one refresh happens at a time.
+const refreshInFlight = new Map<string, Promise<ResolvedToken | null>>();
+
+function refreshKey(workspaceId: string, providerId: string): string {
+  return `${workspaceId}:${providerId}`;
+}
+
 export async function ensureFreshToken(
+  pool: DbPool,
+  workspaceId: string,
+  providerId: string,
+  encryptionKey: string,
+  previousEncryptionKey: string | null,
+  options: { force?: boolean } = {},
+): Promise<ResolvedToken | null> {
+  // Single-flight: if a refresh is already in progress for this
+  // (workspace, provider), wait for it and reuse the result.
+  const key = refreshKey(workspaceId, providerId);
+  const existing = refreshInFlight.get(key);
+  if (existing) return existing;
+
+  const promise = doEnsureFreshToken(
+    pool,
+    workspaceId,
+    providerId,
+    encryptionKey,
+    previousEncryptionKey,
+    options,
+  ).finally(() => {
+    refreshInFlight.delete(key);
+  });
+  refreshInFlight.set(key, promise);
+  return promise;
+}
+
+async function doEnsureFreshToken(
   pool: DbPool,
   workspaceId: string,
   providerId: string,

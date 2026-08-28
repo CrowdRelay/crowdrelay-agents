@@ -15,9 +15,12 @@ import { decrypt } from "../crypto.js";
 import { extractWorkspaceId } from "../auth.js";
 
 const pasteKeySchema = z.object({
-  provider: z.string().min(1),
-  api_key: z.string().min(1),
+  provider: z.string().min(1).max(64),
+  api_key: z.string().min(1).max(4000),
   label: z.string().max(100).optional().default(""),
+  // Optional account/org identifier — used by Cognition (Devin) to store the
+  // org ID alongside the API key. Other providers ignore this field.
+  provider_account: z.string().max(200).optional(),
 });
 
 export function registerCredentialRoutes(
@@ -67,7 +70,7 @@ export function registerCredentialRoutes(
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "invalid body" });
     }
 
-    const { provider: providerId, api_key, label } = parsed.data;
+    const { provider: providerId, api_key, label, provider_account } = parsed.data;
     const provider = findProvider(providerId);
     if (!provider) {
       return reply.code(404).send({ error: `provider '${providerId}' not found` });
@@ -77,6 +80,16 @@ export function registerCredentialRoutes(
     }
     if (!provider.validateApiKey) {
       return reply.code(400).send({ error: `${provider.name} does not support API keys — use the connect flow` });
+    }
+
+    // Cognition (Devin) requires an org ID in addition to the API key.
+    if (providerId === "cognition") {
+      if (!provider_account) {
+        return reply.code(400).send({ error: "Cognition requires an organization ID (org-...)" });
+      }
+      if (!/^org-[a-zA-Z0-9_-]+$/.test(provider_account)) {
+        return reply.code(400).send({ error: "Cognition org ID must match format: org-..." });
+      }
     }
 
     // Validate the key
@@ -94,6 +107,7 @@ export function registerCredentialRoutes(
       "api_key",
       api_key,
       opts.encryptionKey,
+      provider_account,
     );
 
     return reply.code(201).send(credential);
