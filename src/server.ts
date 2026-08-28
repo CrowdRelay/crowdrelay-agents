@@ -9,6 +9,7 @@ import { registerScheduleRoutes } from "./routes/schedules.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerCredentialRoutes } from "./routes/credentials.js";
 import { registerOAuthRoutes } from "./routes/oauth.js";
+import { registerChatRoutes } from "./routes/chat.js";
 import { recoverStaleTasks } from "./store/tasks.js";
 import { claimDueSchedules } from "./agent/schedules.js";
 import { findTemplate } from "./templates/catalog.js";
@@ -94,6 +95,12 @@ async function main(): Promise<void> {
   registerScheduleRoutes(app, {
     pool,
     authKey: config.authKey,
+  });
+
+  // Chatbot route (auth required — uses free Zen models)
+  registerChatRoutes(app, {
+    authKey: config.authKey,
+    zenToken: config.opencodeZenToken,
   });
 
   const [host, portStr] = config.bind.split(":");
