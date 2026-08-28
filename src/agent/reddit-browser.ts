@@ -305,8 +305,12 @@ export class RedditBrowser {
 
     await this.closeContext();
     mkdirSync(this.profileDir, { recursive: true });
+    // Reddit blocks headless Chromium (403 on .json, empty search results).
+    // Run headed inside Xvfb when DISPLAY is set (container); fall back to
+    // headless only when no display is available (local dev without Xvfb).
+    const hasDisplay = !!process.env.DISPLAY;
     this.context = await chromium.launchPersistentContext(this.profileDir, {
-      headless: true,
+      headless: !hasDisplay,
       userAgent: USER_AGENT,
       viewport: { width: 1280, height: 800 },
       locale: "en-US",
@@ -377,16 +381,43 @@ export class RedditBrowser {
     }
   }
 
-  /** Probes /me.json — 200 with a username means the session is alive. */
+  /**
+   * Probes whether the browser session is authenticated. Tries /me.json
+   * first (fast, works on Mac/residential). If that 403s (container
+   * fingerprinting), falls back to checking the HTML homepage for a
+   * logged-in indicator (the "Log In" button is absent when authenticated).
+   */
   private async hasValidSession(page: Page): Promise<boolean> {
     try {
+      // Fast path: JSON API (works outside containers)
       const response = await page.goto(`${REDDIT_ORIGIN}/me.json`, {
         waitUntil: "domcontentloaded",
         timeout: SESSION_PROBE_TIMEOUT_MS,
       });
-      if (!response || response.status() !== 200) return false;
-      const body = (await response.json()) as { data?: { name?: string } };
-      return typeof body?.data?.name === "string" && body.data.name.length > 0;
+      if (response && response.status() === 200) {
+        try {
+          const body = (await response.json()) as { data?: { name?: string } };
+          if (typeof body?.data?.name === "string" && body.data.name.length > 0) {
+            return true;
+          }
+        } catch {
+          // Non-JSON response — fall through to HTML check
+        }
+      }
+      // Fallback: check HTML homepage for login state
+      const htmlResp = await page.goto(`${REDDIT_ORIGIN}/`, {
+        waitUntil: "domcontentloaded",
+        timeout: SESSION_PROBE_TIMEOUT_MS,
+      });
+      if (!htmlResp || htmlResp.status() !== 200) return false;
+      // When logged out, Reddit shows a "Log In" / "Zarejestruj się" button.
+      // When logged in, the homepage shows the feed with no login prompt.
+      const hasLoginButton = await page
+        .locator('a[href*="/login"], button:has-text("Log In"), button:has-text("Zaloguj")')
+        .first()
+        .isVisible({ timeout: 3000 })
+        .catch(() => false);
+      return !hasLoginButton;
     } catch {
       return false;
     }
@@ -397,14 +428,15 @@ export class RedditBrowser {
       waitUntil: "domcontentloaded",
       timeout: PAGE_TIMEOUT_MS,
     });
-    const userField = page.locator(
-      'input[name="username"], #loginUsername',
-    ).first();
+    // Reddit renders login inputs inside <faceplate-text-input> custom
+    // elements with shadow DOM. Playwright pierces open shadow roots,
+    // so input[name="username"] works directly.
+    const userField = page.locator('input[name="username"]').first();
     await userField.waitFor({ timeout: 15_000 });
     await userField.fill(username);
-    await page.locator('input[name="password"], #loginPassword').first().fill(password);
+    await page.locator('input[name="password"]').first().fill(password);
     await page
-      .locator('button[type="submit"]:has-text("Log In"), button:has-text("Log In")')
+      .locator('button:has-text("Log In")')
       .first()
       .click();
 
@@ -429,37 +461,64 @@ export class RedditBrowser {
       waitUntil: "domcontentloaded",
       timeout: PAGE_TIMEOUT_MS,
     });
-    const googleButton = page
-      .locator('button:has-text("Continue with Google"), a:has-text("Continue with Google")')
-      .first();
+    // Reddit renders "Continue with Google" as a Google Identity Services
+    // (SIW) button inside an iframe, not as a Reddit-native button.
+    // The iframe src contains "accounts.google.com/gsi".
+    const gsiFrame = page.frameLocator(
+      'iframe[src*="accounts.google.com/gsi"]',
+    ).first();
+    const googleButton = gsiFrame.locator('[role="button"]').first();
     await googleButton.waitFor({ timeout: 15_000 });
     await googleButton.click();
 
-    await page.waitForURL(/accounts\.google\.com/, { timeout: PAGE_TIMEOUT_MS });
+    // Google may open a popup or navigate the page to accounts.google.com.
+    // Handle both: wait for either a popup or a URL change.
+    const popupPromise = page.waitForEvent("popup", { timeout: 5_000 })
+      .catch(() => null);
+    await page.waitForURL(/accounts\.google\.com/, { timeout: 15_000 })
+      .catch(async () => {
+        // No navigation — check if a popup opened.
+      });
+    const popup = await popupPromise;
+    const googlePage = popup ?? page;
 
-    const emailField = page.locator('input[type="email"]').first();
+    const emailField = googlePage.locator('input[type="email"]').first();
     await emailField.waitFor({ timeout: 15_000 });
     await emailField.fill(email);
-    await page.locator('#identifierNext, button:has-text("Next")').first().click();
+    await googlePage.locator('#identifierNext, button:has-text("Next")').first().click();
 
-    const passwordField = page.locator('input[type="password"]:visible').first();
+    const passwordField = googlePage.locator('input[type="password"]:visible').first();
     await passwordField.waitFor({ timeout: 15_000 });
     await passwordField.fill(password);
-    await page.locator('#passwordNext, button:has-text("Next")').first().click();
+    await googlePage.locator('#passwordNext, button:has-text("Next")').first().click();
 
     // Google interstitials ("verify it's you", 2FA) leave us on google.com.
-    await page.waitForURL(/reddit\.com/, { timeout: PAGE_TIMEOUT_MS * 2 }).catch(() => {
-      throw new RedditBrowserError(
-        "google login did not return to reddit — device verification, 2FA, or bot detection hit (check REDDIT_BROWSER logs)",
-        400,
-      );
-    });
+    // On success, the popup closes and the original page navigates to reddit.
+    if (popup) {
+      await popup.waitForEvent("close", { timeout: PAGE_TIMEOUT_MS * 2 }).catch(() => {});
+      await page.waitForURL(/reddit\.com/, { timeout: PAGE_TIMEOUT_MS * 2 }).catch(() => {
+        throw new RedditBrowserError(
+          "google login did not return to reddit — device verification, 2FA, or bot detection hit (check REDDIT_BROWSER logs)",
+          400,
+        );
+      });
+    } else {
+      await page.waitForURL(/reddit\.com/, { timeout: PAGE_TIMEOUT_MS * 2 }).catch(() => {
+        throw new RedditBrowserError(
+          "google login did not return to reddit — device verification, 2FA, or bot detection hit (check REDDIT_BROWSER logs)",
+          400,
+        );
+      });
+    }
   }
 
   /**
    * Navigates the authenticated browser to a Reddit JSON path and returns
    * the parsed body. A 403/429 invalidates the cached session so the next
    * call re-validates (and re-logins if the session truly expired).
+   *
+   * Note: Reddit blocks .json endpoints from container environments even
+   * with a valid session. Use searchSubredditsHtml for subreddit search.
    */
   async getJson(workspaceId: string, path: string): Promise<unknown> {
     const context = await this.ensureSession(workspaceId);
@@ -487,6 +546,130 @@ export class RedditBrowser {
           502,
         );
       }
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Scrapes subreddit search results from the HTML search page.
+   * Used instead of getJson for subreddit search because Reddit blocks
+   * .json endpoints from container environments.
+   */
+  async searchSubredditsHtml(
+    workspaceId: string,
+    query: string,
+    limit: number,
+  ): Promise<ScrapeResultRow[]> {
+    const context = await this.ensureSession(workspaceId);
+    const page = await context.newPage();
+    try {
+      const url = `${REDDIT_ORIGIN}/search/?q=${encodeURIComponent(query)}&type=sr`;
+      const response = await page.goto(url, {
+        waitUntil: "networkidle",
+        timeout: PAGE_TIMEOUT_MS,
+      });
+      const status = response?.status() ?? 0;
+      if (status === 403 || status === 429) {
+        await this.invalidate();
+        throw new RedditBrowserError(
+          `reddit returned HTTP ${status} for search HTML`,
+          status,
+        );
+      }
+      if (!response || !response.ok()) {
+        throw new RedditBrowserError(
+          `reddit returned HTTP ${status} for search HTML`,
+          status || 502,
+        );
+      }
+      // Wait for search results to render
+      await page.waitForTimeout(3000);
+
+      const rows = await page.evaluate(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (maxLimit: number) => {
+          const results: Array<{
+            subreddit_name: string;
+            display_name: string;
+            description: string;
+            subscribers: number;
+            url: string;
+            over18: boolean;
+          }> = [];
+          const seen = new Set<string>();
+          // Nav links to skip
+          const navNames = new Set([
+            "popular", "all", "AskReddit", "pics", "funny", "movies",
+            "gaming", "worldnews", "news", "todayilearned", "nottheonion",
+            "explainlikeimfive", "mildlyinteresting", "DIY", "videos",
+            "OldSchoolCool", "europe", "TwoXChromosomes", "tifu", "Music",
+            "books", "LifeProTips", "dataisbeautiful", "aww", "science",
+            "space", "Showerthoughts", "askscience", "Jokes", "poland",
+            "Art", "IAmA", "Futurology", "sports", "UpliftingNews", "food",
+            "nosleep", "creepy", "history", "gifs", "philosophy",
+            "Documentaries", "EarthPorn", "announcements", "writing",
+          ]);
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const doc = (globalThis as any).document;
+          const links = doc.querySelectorAll('a[href^="/r/"]');
+          for (const link of links) {
+            if (results.length >= maxLimit) break;
+            const href = link.getAttribute("href") || "";
+            const match = href.match(/^\/r\/([^/]+)\/?$/);
+            if (!match) continue;
+            const name = match[1];
+            if (seen.has(name) || navNames.has(name)) continue;
+            seen.add(name);
+
+            // Walk up to find the card container with description
+            let card = link;
+            for (let i = 0; i < 10; i++) {
+              if (!card?.parentElement) break;
+              card = card.parentElement;
+              const text = card.textContent || "";
+              if (text.length > 100) break;
+            }
+            const cardText = card?.textContent?.trim() || "";
+
+            // Extract description: text after the subreddit name
+            const nameIdx = cardText.indexOf(name);
+            let description = "";
+            if (nameIdx >= 0) {
+              description = cardText
+                .substring(nameIdx + name.length)
+                .replace(/^\s*r\/\s*\S+\s*/, "")
+                .trim()
+                .substring(0, 300);
+            }
+
+            // Extract subscriber count from text like "427 tys." or "1.2M"
+            let subscribers = 0;
+            const subMatch = cardText.match(
+              /([\d,.]+)\s*(tys|k|m|mln)\b/i,
+            );
+            if (subMatch) {
+              const num = parseFloat(subMatch[1].replace(",", "."));
+              const unit = subMatch[2].toLowerCase();
+              if (unit === "tys" || unit === "k") subscribers = Math.round(num * 1000);
+              else if (unit === "m" || unit === "mln") subscribers = Math.round(num * 1_000_000);
+            }
+
+            results.push({
+              subreddit_name: name.toLowerCase(),
+              display_name: name,
+              description,
+              subscribers,
+              url: href,
+              over18: false,
+            });
+          }
+          return results;
+        },
+        limit,
+      );
+      return rows;
     } finally {
       await page.close().catch(() => {});
     }
@@ -710,11 +893,12 @@ export async function scrapeRedditQueries(
     const query = rawQuery.trim();
     if (!query) continue;
     try {
-      const body = await browser.getJson(
+      // Use HTML scraping — Reddit blocks .json endpoints from containers.
+      const rows = await browser.searchSubredditsHtml(
         workspaceId,
-        `/subreddits/search.json?q=${encodeURIComponent(query)}&limit=${boundedLimit}&sort=activity&raw_json=1`,
+        query,
+        boundedLimit,
       );
-      const rows = parseSubredditListing(body, boundedLimit);
       for (const row of rows) {
         await upsertScrapeResult(pool, workspaceId, query, row);
       }

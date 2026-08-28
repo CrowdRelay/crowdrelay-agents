@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
@@ -47,4 +48,4 @@ COPY --from=builder /app/dist ./dist
 EXPOSE 8095
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:8095/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-CMD ["node", "--max-old-space-size=256", "dist/server.js"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x800x24 & export DISPLAY=:99 && exec node --max-old-space-size=256 dist/server.js"]
