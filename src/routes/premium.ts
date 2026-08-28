@@ -2,8 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { DbPool } from "../store/db.js";
 import { extractWorkspaceId } from "../auth.js";
 import { getConnectedProviders } from "../store/credentials.js";
-import { PREMIUM_MODELS, availablePremiumModels } from "../agent/models.js";
-import { PROVIDERS } from "../providers/registry.js";
+import { availablePremiumModels } from "../agent/models.js";
 
 export function registerPremiumRoutes(
   app: FastifyInstance,
@@ -49,7 +48,9 @@ export function registerPremiumRoutes(
       `SELECT monthly_cost_micro_usd FROM agent_service_budgets WHERE workspace_id = $1`,
       [workspaceId],
     );
-    const limitMicroUsd = budgetRow.rows[0]?.monthly_cost_micro_usd ?? opts.defaultMonthlyBudgetMicroUsd;
+    const limitMicroUsd = budgetRow.rows[0]?.monthly_cost_micro_usd != null
+      ? Math.min(Number(budgetRow.rows[0].monthly_cost_micro_usd), Number.MAX_SAFE_INTEGER)
+      : opts.defaultMonthlyBudgetMicroUsd;
 
     // Recent premium tasks (last 20)
     const tasksRow = await opts.pool.query(

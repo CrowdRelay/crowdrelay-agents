@@ -46,7 +46,7 @@ export function registerOAuthRoutes(
     encryptionKey: string;
     oauthClients: Record<string, OAuthClientConfig>;
   },
-) {
+): { cleanup: () => void } {
   configureOAuthClients(opts.oauthClients);
 
   const STATE_TTL_MS = 10 * 60 * 1000;
@@ -207,6 +207,18 @@ export function registerOAuthRoutes(
           redirectUri: row.redirect_uri,
           codeVerifier: row.code_verifier ?? "",
         });
+        // Validate that the provider granted all required scopes. If the user
+        // consented to fewer scopes, the credential is broken — reject early
+        // instead of storing a connection that will fail on every call.
+        if (oauth.scopes.length > 0 && tokens.scope) {
+          const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
+          const missing = oauth.scopes.filter((s) => !granted.has(s));
+          if (missing.length > 0) {
+            return reply.code(422).send({
+              error: `OAuth token is missing required scopes: ${missing.join(", ")}`,
+            });
+          }
+        }
         tokens.account =
           tokens.account ?? (tokens.accessToken ? await fetchAccountLabel(row.provider, tokens.accessToken) : undefined);
         await storeOAuthTokens(opts.pool, row.workspace_id, row.provider, tokens, opts.encryptionKey);
@@ -292,11 +304,12 @@ export function registerOAuthRoutes(
 
   // Periodic cleanup of expired state rows (same hygiene as the old in-memory
   // map, but now the store is durable and multi-instance safe).
-  setInterval(() => {
+  const cleanupTimer = setInterval(() => {
     void opts.pool
       .query(`DELETE FROM agent_service_oauth_states WHERE expires_at < now()`)
       .catch((err) => console.error("oauth state cleanup failed:", err));
-  }, 5 * 60 * 1000).unref();
-}
+  }, 5 * 60 * 1000);
+  cleanupTimer.unref();
 
-export { startQuerySchema };
+  return { cleanup: () => clearInterval(cleanupTimer) };
+}

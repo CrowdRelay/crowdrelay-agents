@@ -67,6 +67,15 @@ export interface ProviderDef {
   oauthScopes?: string[];
   /** Whether this provider offers free models without any credential */
   freeTier?: boolean;
+  /**
+   * Tier controls which UI tab a provider appears in:
+   * - "premium": OAuth-capable providers that appear in the Premium AI tab.
+   *   These support OAuth sign-in (Google account, ChatGPT plan, etc.) AND
+   *   API key paste as a fallback. The brain routes complex tasks to these.
+   * - "free": API-key-only or no-key providers that appear in the Providers
+   *   tab. These are developer-accessible models for simpler tasks.
+   */
+  tier: "premium" | "free";
 }
 
 // --- Validation functions ---
@@ -213,6 +222,7 @@ export const PROVIDERS: ProviderDef[] = [
     authMethod: "none",
     protocol: "openai",
     freeTier: true,
+    tier: "free",
     models: [
       { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free (128K)", contextWindow: 128_000, bestFor: "General tasks, balanced reasoning", paid: false },
       { id: "mimo-v2.5-free", name: "MiMo v2.5 Free (32K)", contextWindow: 32_000, bestFor: "Quick tasks, short content", paid: false },
@@ -226,6 +236,7 @@ export const PROVIDERS: ProviderDef[] = [
       "GPT-4o, o3, o1, and more. Connect with an API key from platform.openai.com, or sign in with your ChatGPT plan (beta).",
     authMethod: "api_key",
     protocol: "openai",
+    tier: "premium",
     validateApiKey: validateOpenAI,
     oauth: {
       kind: "authorization_code_pkce",
@@ -250,6 +261,7 @@ export const PROVIDERS: ProviderDef[] = [
       "Claude Opus 4.1, Sonnet 4, Haiku. Connect with an API key from console.anthropic.com, or sign in with your Claude plan (beta).",
     authMethod: "api_key",
     protocol: "anthropic",
+    tier: "premium",
     validateApiKey: validateAnthropic,
     oauth: {
       kind: "authorization_code_pkce",
@@ -272,6 +284,7 @@ export const PROVIDERS: ProviderDef[] = [
     description: "Gemini 2.0 Flash, 1.5 Pro. Connect via OAuth or paste an API key from AI Studio.",
     authMethod: "api_key",
     protocol: "openai", // Google exposes an OpenAI-compatible endpoint
+    tier: "premium",
     validateApiKey: validateGoogle,
     oauth: {
       kind: "authorization_code",
@@ -283,7 +296,6 @@ export const PROVIDERS: ProviderDef[] = [
       extraAuthorizeParams: { access_type: "offline", prompt: "consent" },
       tokenFlavor: "refresh_token",
     },
-    oauthScopes: ["https://www.googleapis.com/auth/generative-language"],
     models: [
       { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (1M)", contextWindow: 1_000_000, bestFor: "Very fast, huge context, multilingual", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
       { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M)", contextWindow: 2_000_000, bestFor: "Largest context window, complex analysis", paid: true, pricing: { inputPerMTokUsd: 1.25, outputPerMTokUsd: 5 } },
@@ -297,6 +309,7 @@ export const PROVIDERS: ProviderDef[] = [
     description: "Llama 3.3 70B, Mixtral, and more. Ultra-fast inference. Paste your API key from console.groq.com.",
     authMethod: "api_key",
     protocol: "openai",
+    tier: "free",
     validateApiKey: validateGroq,
     models: [
       { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B (128K)", contextWindow: 128_000, bestFor: "Strong reasoning, fast inference", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
@@ -311,6 +324,7 @@ export const PROVIDERS: ProviderDef[] = [
       "One connection unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Sign in with OpenRouter (official OAuth) or paste a key.",
     authMethod: "oauth",
     protocol: "openai",
+    tier: "premium",
     validateApiKey: validateOpenRouter,
     oauth: {
       kind: "authorization_code_pkce",
@@ -336,6 +350,7 @@ export const PROVIDERS: ProviderDef[] = [
     description: "Grok 4.6, 4.5, and 4.3. Paste your API key from console.x.ai. OpenAI-compatible endpoint.",
     authMethod: "api_key",
     protocol: "openai",
+    tier: "free",
     validateApiKey: validateXAI,
     models: [
       { id: "grok-4.6", name: "Grok 4.6 (500K)", contextWindow: 500_000, bestFor: "Most intelligent Grok, code and chat", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
@@ -350,6 +365,7 @@ export const PROVIDERS: ProviderDef[] = [
       "Use your Copilot subscription to run models like GPT-4o and Claude. Connect with your GitHub account (beta).",
     authMethod: "oauth",
     protocol: "openai",
+    tier: "premium",
     oauth: {
       kind: "device_code",
       authorizeUrl: "https://github.com/login/device/code",
@@ -372,6 +388,7 @@ export const PROVIDERS: ProviderDef[] = [
       "GLM-5.3, GLM-5.1 — powerful Chinese AI models with strong agentic and tool-use capabilities. OpenAI-compatible API. Paste your API key from open.bigmodel.cn (China) or z.ai (international).",
     authMethod: "api_key",
     protocol: "openai",
+    tier: "free",
     validateApiKey: validateZhipu,
     models: [
       { id: "glm-5.3", name: "GLM-5.3 (128K)", contextWindow: 128_000, bestFor: "Latest flagship, strong agentic tasks and tool use", paid: true, pricing: { inputPerMTokUsd: 0.5, outputPerMTokUsd: 1.5 } },
@@ -385,6 +402,7 @@ export const PROVIDERS: ProviderDef[] = [
     description:
       "Devin agentic sessions powered by GLM-5.2 High. Unlike other providers, Devin runs autonomously — it can use shell, files, web search, and spawn sub-agents to complete complex multi-step tasks. Paste your Devin API key (cog_...) and organization ID (org-...) from settings.devin.ai.",
     authMethod: "api_key",
+    tier: "free",
     // Devin uses a session API, not chat completions — but we set "openai" here
     // so the credential route accepts it. The runner dispatches via callDevinSession()
     // instead of callOpenAICompatible() based on the model's `agentic` flag.
@@ -445,6 +463,7 @@ export function providerSummaries() {
     description: p.description,
     authMethod: p.authMethod,
     freeTier: p.freeTier ?? false,
+    tier: p.tier,
     modelCount: p.models.length,
     oauthScopes: p.oauth?.scopes ?? [],
     oauth: p.oauth

@@ -69,10 +69,6 @@ export const MODELS: ModelDef[] = [
   },
 ];
 
-export function findModel(id: string): ModelDef | undefined {
-  return MODELS.find((m) => m.id === id);
-}
-
 // ─── Premium model registry ──────────────────────────────────────────────
 //
 // Intelligent token optimization: these are the powerful models that

@@ -73,19 +73,23 @@ export async function setScheduleEnabled(
 export interface DueSchedule extends Schedule {}
 
 /** Claims due schedules atomically (FOR UPDATE SKIP LOCKED) and advances
- *  next_run_at so a concurrent ticker cannot double-fire. */
+ *  next_run_at so a concurrent ticker cannot double-fire. Uses a MATERIALIZED
+ *  CTE to ensure the FOR UPDATE locks the selected rows before the UPDATE
+ *  touches them — a plain `WHERE id IN (SELECT ... FOR UPDATE ... LIMIT)`
+ *  may not lock all matched rows reliably. */
 export async function claimDueSchedules(pool: DbPool, limit = 5): Promise<DueSchedule[]> {
   const { rows } = await pool.query(
-    `UPDATE agent_service_schedules
-     SET next_run_at = now() + make_interval(mins => interval_minutes),
-         last_run_at = now()
-     WHERE id IN (
+    `WITH due AS MATERIALIZED (
        SELECT id FROM agent_service_schedules
        WHERE enabled AND next_run_at <= now()
        ORDER BY next_run_at
        LIMIT $1
        FOR UPDATE SKIP LOCKED
      )
+     UPDATE agent_service_schedules
+     SET next_run_at = now() + make_interval(mins => interval_minutes),
+         last_run_at = now()
+     WHERE id IN (SELECT id FROM due)
      RETURNING *`,
     [limit],
   );

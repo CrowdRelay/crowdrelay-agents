@@ -11,7 +11,7 @@ import {
 import { findProvider, providerSummaries, availableModels } from "../providers/registry.js";
 import { ensureFreshToken } from "../providers/oauth/refresh.js";
 import type { OAuthClientConfig } from "../config.js";
-import { decrypt } from "../crypto.js";
+import { decryptWithRotation } from "../crypto.js";
 import { extractWorkspaceId } from "../auth.js";
 
 const pasteKeySchema = z.object({
@@ -162,7 +162,11 @@ export function registerCredentialRoutes(
             return reply.code(404).send({ error: "credential not found" });
           }
 
-          const apiKey = decrypt(rows[0].encrypted_value as string, opts.encryptionKey);
+          const { value: apiKey } = decryptWithRotation(
+            rows[0].encrypted_value as string,
+            opts.encryptionKey,
+            opts.previousEncryptionKey,
+          );
           const result = await provider.validateApiKey(apiKey);
 
           await updateCredentialStatus(

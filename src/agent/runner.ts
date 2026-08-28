@@ -12,7 +12,7 @@ import { parseOutcome, outputContractText, type OutcomeKind } from "./structured
 import { emitOutcomes } from "./outcomes.js";
 import { recordUsage } from "./usage.js";
 import { verifyOutcome, type VerifyResult } from "./verify.js";
-import { PREMIUM_MODELS, availablePremiumModels, estimatePremiumCostMicroUsd } from "./models.js";
+import { availablePremiumModels } from "./models.js";
 import { getDiscoveredFreeModels, type DiscoveredModel } from "./discovery.js";
 
 import { PROVIDER_ENDPOINTS } from "./endpoints.js";

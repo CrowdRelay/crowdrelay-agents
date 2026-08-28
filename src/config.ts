@@ -62,12 +62,28 @@ export function loadConfig(): Config {
     if (client) oauthClients[providerId] = client;
   }
 
+  const encryptionKey = required("AGENT_SERVICE_ENCRYPTION_KEY");
+  if (!/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+    throw new Error(
+      "AGENT_SERVICE_ENCRYPTION_KEY must be exactly 64 hex characters (32-byte AES-256-GCM key)",
+    );
+  }
+  const previousEncryptionKey = optional("AGENT_SERVICE_PREVIOUS_ENCRYPTION_KEY");
+  if (
+    previousEncryptionKey !== null &&
+    !/^[0-9a-fA-F]{64}$/.test(previousEncryptionKey)
+  ) {
+    throw new Error(
+      "AGENT_SERVICE_PREVIOUS_ENCRYPTION_KEY must be exactly 64 hex characters or unset",
+    );
+  }
+
   return {
     bind: env.AGENT_SERVICE_BIND ?? "0.0.0.0:8095",
     databaseUrl: required("DATABASE_URL"),
     authKey: required("AGENT_SERVICE_AUTH_KEY"),
-    encryptionKey: required("AGENT_SERVICE_ENCRYPTION_KEY"),
-    previousEncryptionKey: optional("AGENT_SERVICE_PREVIOUS_ENCRYPTION_KEY"),
+    encryptionKey,
+    previousEncryptionKey,
     // Comma-separated list of allowed CORS origins. If unset, CORS is
     // disabled entirely (requests must be same-origin). This prevents any
     // website from making authenticated cross-origin requests to the agent

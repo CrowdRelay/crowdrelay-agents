@@ -51,6 +51,33 @@ export async function recordUsage(
        WHERE workspace_id = $1 FOR UPDATE`,
       [workspaceId],
     );
+    // Check remaining budget before inserting. If the budget is exhausted,
+    // reject this usage to prevent overspend by concurrent tasks.
+    if (!model.paid) {
+      // Free-tier models never consume budget — skip the check entirely.
+    } else {
+      const defaultBudget = defaultMonthlyBudgetMicroUsd ?? 0;
+      const { rows: spendRows } = await client.query(
+        `SELECT COALESCE(SUM(cost_micro_usd), 0)::bigint AS spent
+         FROM agent_service_usage
+         WHERE workspace_id = $1
+           AND day >= date_trunc('month', CURRENT_DATE)`,
+        [workspaceId],
+      );
+      const { rows: budgetRows } = await client.query(
+        `SELECT monthly_cost_micro_usd FROM agent_service_budgets WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      const limit = bigIntToSafeNumber(
+        budgetRows[0]?.monthly_cost_micro_usd,
+        defaultBudget,
+      );
+      const spent = bigIntToSafeNumber(spendRows[0]?.spent, 0);
+      if (limit > 0 && spent + costMicroUsd > limit) {
+        await client.query("ROLLBACK");
+        return 0;
+      }
+    }
     await client.query(
       `INSERT INTO agent_service_usage (workspace_id, day, provider, model_id, requests, tokens_in, tokens_out, cost_micro_usd)
        VALUES ($1, CURRENT_DATE, $2, $3, 1, $4, $5, $6)
@@ -139,9 +166,19 @@ export async function checkBudgetForTask(
   );
   if (hasFreeVariant) return { allowed: true };
 
-  const provider = findProvider(providerId);
-  const model = provider?.models.find((m) => m.id === modelId);
-  if (!model || !model.paid) return { allowed: true };
+  // When a specific provider is given, check if that provider's model is paid.
+  // When providerId is empty (schedule/queue pre-check), check if ANY provider
+  // offers this model as paid — if so, the task must be budget-gated.
+  if (providerId) {
+    const provider = findProvider(providerId);
+    const model = provider?.models.find((m) => m.id === modelId);
+    if (!model || !model.paid) return { allowed: true };
+  } else {
+    const hasPaidVariant = allProviders.some(
+      (p) => p.models.some((m) => m.id === modelId && m.paid),
+    );
+    if (!hasPaidVariant) return { allowed: true };
+  }
 
   const state = await getBudgetState(pool, workspaceId, defaultMonthlyBudgetMicroUsd);
   if (state.remainingMicroUsd <= 0) return { allowed: false, state };

@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   });
 
   // OAuth routes (auth required for start, callback uses state token)
-  registerOAuthRoutes(app, {
+  const oauthCleanup = registerOAuthRoutes(app, {
     pool,
     authKey: config.authKey,
     encryptionKey: config.encryptionKey,
@@ -220,7 +220,17 @@ async function main(): Promise<void> {
         console.error("schedule ticker error:", err);
       }
     };
-    schedulerTimer = setInterval(tick, 60_000);
+    let schedulerBusy = false;
+    const guardedTick = async () => {
+      if (schedulerBusy) return;
+      schedulerBusy = true;
+      try {
+        await tick();
+      } finally {
+        schedulerBusy = false;
+      }
+    };
+    schedulerTimer = setInterval(guardedTick, 60_000);
     schedulerTimer.unref();
   }
 
@@ -285,7 +295,17 @@ async function main(): Promise<void> {
         console.error("task poller error:", err);
       }
     };
-    taskPollerTimer = setInterval(pollTasks, 15_000);
+    let pollerBusy = false;
+    const guardedPoll = async () => {
+      if (pollerBusy) return;
+      pollerBusy = true;
+      try {
+        await pollTasks();
+      } finally {
+        pollerBusy = false;
+      }
+    };
+    taskPollerTimer = setInterval(guardedPoll, 15_000);
     taskPollerTimer.unref();
   }
 
@@ -314,7 +334,11 @@ async function main(): Promise<void> {
   // OAuth, and stores session cookies for the Rust worker to use. Only
   // runs when a Google OAuth client is configured and there are workspaces
   // with expired/missing cookies.
+  // Kill switch: set REDDIT_SCRAPER_ENABLED=false to disable both Reddit
+  // tickers (scraper + browser scrape) without restarting the service.
   let scraperTimer: NodeJS.Timeout | null = null;
+  let redditScrapeTimer: NodeJS.Timeout | null = null;
+  if (config.redditScraperEnabled) {
   const scraperTick = async () => {
     try {
       const googleClient = config.oauthClients["google"] ?? null;
@@ -340,7 +364,6 @@ async function main(): Promise<void> {
   //   2. distinct queries already stored per workspace (keeps results fresh)
   // Only workspaces with stored reddit-browser credentials are touched, and
   // every failure is contained: one bad workspace never blocks another.
-  let redditScrapeTimer: NodeJS.Timeout | null = null;
   const redditScrapeTick = async () => {
     try {
       const envQueries = (process.env.REDDIT_SCRAPER_QUERIES ?? "")
@@ -387,6 +410,7 @@ async function main(): Promise<void> {
   initialScrape.unref();
   redditScrapeTimer = setInterval(redditScrapeTick, 6 * 60 * 60 * 1000);
   redditScrapeTimer.unref();
+  } // end if (config.redditScraperEnabled)
 
   // Graceful shutdown: drain HTTP requests, wait for in-flight tasks (up to
   // 30s), then close the DB pool. Without this, SIGTERM kills the process
@@ -401,6 +425,7 @@ async function main(): Promise<void> {
     if (discoveryTimer) clearInterval(discoveryTimer);
     if (scraperTimer) clearInterval(scraperTimer);
     if (redditScrapeTimer) clearInterval(redditScrapeTimer);
+    oauthCleanup.cleanup();
     await app.close();
 
     if (inFlightTasks.size > 0) {

@@ -537,19 +537,4 @@ export function findTool(name: string): McpTool | undefined {
   return tools.find((t) => t.name === name);
 }
 
-/**
- * Returns tool definitions in the format an LLM expects (OpenAI function calling format).
- */
-export function toolDefinitions() {
-  return tools.map((t) => ({
-    type: "function" as const,
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: {
-        type: "object",
-        properties: t.parameters,
-      },
-    },
-  }));
-}
+

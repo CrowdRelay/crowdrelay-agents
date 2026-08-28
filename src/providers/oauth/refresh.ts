@@ -194,7 +194,3 @@ export function oauthClientId(providerId: string): string {
 export function oauthClientSecret(providerId: string): string | null {
   return clients[providerId]?.clientSecret ?? null;
 }
-
-export function oauthClientConfigured(providerId: string): boolean {
-  return Boolean(clients[providerId]?.clientId);
-}

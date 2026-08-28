@@ -61,10 +61,3 @@ export function decryptWithRotation(
     return { value: decrypt(ciphertext, previousKey), rotated: true };
   }
 }
-
-/**
- * Generates a random master key suitable for AGENT_SERVICE_ENCRYPTION_KEY.
- */
-export function generateMasterKey(): string {
-  return randomBytes(32).toString("hex");
-}
