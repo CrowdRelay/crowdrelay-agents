@@ -10,17 +10,9 @@ import { buildContext, renderContextSections } from "./context.js";
 import { parseOutcome, outputContractText, type OutcomeKind } from "./structured.js";
 import { emitOutcomes } from "./outcomes.js";
 import { recordUsage } from "./usage.js";
+import { verifyOutcome, type VerifyResult } from "./verify.js";
 
-/** Static map of provider ID → OpenAI-compatible chat completions endpoint. */
-const PROVIDER_ENDPOINTS: Record<string, string> = {
-  "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
-  openai: "https://api.openai.com/v1/chat/completions",
-  google: "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions",
-  groq: "https://api.groq.com/openai/v1/chat/completions",
-  openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  xai: "https://api.x.ai/v1/chat/completions",
-  "github-copilot": "https://api.githubcopilot.com/chat/completions",
-};
+import { PROVIDER_ENDPOINTS } from "./endpoints.js";
 
 export interface RunConfig {
   pool: DbPool;
@@ -51,6 +43,9 @@ interface AttemptRecord {
   ok: boolean;
   cost_micro_usd: number;
   error?: string;
+  /** Verification result when the model succeeded but was checked by the gate. */
+  verified?: "passed" | "rejected";
+  verification_issues?: string[];
 }
 
 /**
@@ -59,7 +54,9 @@ interface AttemptRecord {
  * 2. Build the full prompt from template + data + operator input
  * 3. Resolve the model + credential chain (OAuth refresh aware)
  * 4. Call the LLM (fallback chain, JSON mode when the template wants structure)
- * 5. Record usage/cost, store the result, parse + emit structured outcomes
+ * 5. For structured outcomes: verify the response with a free-tier model
+ *    before accepting it. Rejected responses fall through to the next model.
+ * 6. Record usage/cost, store the result, parse + emit structured outcomes
  */
 export async function runTask(config: RunConfig): Promise<void> {
   const { pool, taskId, workspaceId, template, prompt } = config;
@@ -93,11 +90,16 @@ export async function runTask(config: RunConfig): Promise<void> {
     let lastError: string | null = null;
     let modelUsed = "";
     const attempts: AttemptRecord[] = [];
+    let verificationResult: VerifyResult | null = null;
+
+    // Resolve a free-tier verifier model — the gate must not add cost.
+    const verifierEntry = await resolveVerifier(config);
 
     // Total budget for the entire fallback chain. Each individual LLM call
     // has its own 120s timeout, but without a chain-level deadline the
     // background task could run for 5–10 minutes across all fallbacks,
     // exceeding the graceful-shutdown window and burning free-tier quota.
+    // Verification calls are cheap and fast, but they share the same budget.
     const CHAIN_DEADLINE_MS = 180_000;
     const chainStart = Date.now();
 
@@ -108,13 +110,57 @@ export async function runTask(config: RunConfig): Promise<void> {
         break;
       }
       try {
-        response = await callLLM(entry, systemPrompt, userPrompt, outputKind !== undefined);
-        modelUsed = entry.model.id;
+        const candidate = await callLLM(entry, systemPrompt, userPrompt, outputKind !== undefined);
         const costMicroUsd = await recordUsage(pool, workspaceId, entry.provider.id, entry.model, {
-          tokensIn: response.tokensIn,
-          tokensOut: response.tokensOut,
+          tokensIn: candidate.tokensIn,
+          tokensOut: candidate.tokensOut,
         });
-        attempts.push({ provider: entry.provider.id, model: entry.model.id, ok: true, cost_micro_usd: costMicroUsd });
+
+        // For structured outcomes, run the verification gate before
+        // accepting this model's response. If the verifier rejects it,
+        // record the issues and try the next model in the chain — a
+        // verified answer from a fallback beats an unverified one from
+        // the primary.
+        if (outputKind && config.outcomesEnabled && verifierEntry) {
+          const verifyRemaining = CHAIN_DEADLINE_MS - (Date.now() - chainStart);
+          if (verifyRemaining <= 5_000) {
+            console.error("Verification deadline exceeded, accepting unverified response");
+            verificationResult = null;
+          } else {
+            verificationResult = await verifyOutcome({
+              verifier: verifierEntry,
+              outcomeKind: outputKind,
+              originalPrompt: prompt,
+              dataSections: renderContextSections(bundle),
+              modelOutput: candidate.content,
+            });
+            if (!verificationResult.passed) {
+              console.error(
+                `Model ${entry.model.id} output rejected by verifier:`,
+                verificationResult.issues.join("; "),
+              );
+              attempts.push({
+                provider: entry.provider.id,
+                model: entry.model.id,
+                ok: true,
+                cost_micro_usd: costMicroUsd,
+                verified: "rejected",
+                verification_issues: verificationResult.issues,
+              });
+              continue;
+            }
+          }
+        }
+
+        response = candidate;
+        modelUsed = entry.model.id;
+        attempts.push({
+          provider: entry.provider.id,
+          model: entry.model.id,
+          ok: true,
+          cost_micro_usd: costMicroUsd,
+          verified: verificationResult?.passed ? "passed" : undefined,
+        });
         break;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
@@ -205,6 +251,14 @@ export async function runTask(config: RunConfig): Promise<void> {
       structured: structuredOk,
       structured_error: structuredError,
       outcome_count: outcomeCount,
+      verification: verificationResult
+        ? {
+            passed: verificationResult.passed,
+            verifier_model: verificationResult.verifierModel,
+            issues: verificationResult.issues,
+            verifier_error: verificationResult.verifierError,
+          }
+        : null,
     });
 
     await updateTaskStatus(pool, taskId, "completed");
@@ -274,6 +328,45 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
   }
 
   return chain;
+}
+
+/**
+ * Resolves a free-tier model for the verification pass. The verifier must
+ * not add cost, so only free models are considered. Preference order:
+ * 1. OpenCode Zen (always available, no key needed)
+ * 2. Groq free models (fast, good for short verification prompts)
+ * 3. Google Gemini free tier
+ *
+ * Returns null when no free model is available — the runner then skips
+ * verification (fail-open) rather than blocking the pipeline.
+ */
+async function resolveVerifier(config: RunConfig): Promise<ChainEntry | null> {
+  const connectedProviders = await getConnectedProviders(config.pool, config.workspaceId);
+
+  // Prefer Zen for verification — it's always available and free.
+  for (const provider of PROVIDERS) {
+    if (provider.id === "opencode-zen") {
+      const key = await resolveApiKey(provider, config, connectedProviders);
+      if (key !== undefined) {
+        // Use the first (most capable) free model.
+        const model = provider.models.find((m) => !m.paid);
+        if (model) return { provider, model, apiKey: key };
+      }
+    }
+  }
+
+  // Fall back to any other free-tier provider.
+  for (const provider of PROVIDERS) {
+    if (provider.id === "opencode-zen") continue;
+    if (!provider.freeTier && !connectedProviders.includes(provider.id)) continue;
+    for (const model of provider.models) {
+      if (model.paid) continue;
+      const key = await resolveApiKey(provider, config, connectedProviders);
+      if (key !== undefined) return { provider, model, apiKey: key };
+    }
+  }
+
+  return null;
 }
 
 async function resolveApiKey(
