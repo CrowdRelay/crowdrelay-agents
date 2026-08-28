@@ -184,7 +184,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "openai",
     name: "OpenAI",
     description:
-      "GPT-4o, GPT-4, o1, and more. Connect with an API key from platform.openai.com, or sign in with your ChatGPT plan (beta).",
+      "GPT-4o, o3, o1, and more. Connect with an API key from platform.openai.com, or sign in with your ChatGPT plan (beta).",
     authMethod: "api_key",
     protocol: "openai",
     validateApiKey: validateOpenAI,
@@ -198,17 +198,17 @@ export const PROVIDERS: ProviderDef[] = [
       experimental: true,
     },
     models: [
+      { id: "o3", name: "o3 (200K)", contextWindow: 200_000, bestFor: "Most powerful OpenAI, deep reasoning, complex analysis", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 60 } },
       { id: "gpt-4o", name: "GPT-4o (128K)", contextWindow: 128_000, bestFor: "Best overall, multimodal, fast", paid: true, pricing: { inputPerMTokUsd: 2.5, outputPerMTokUsd: 10 } },
-      { id: "gpt-4o-mini", name: "GPT-4o Mini (128K)", contextWindow: 128_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true, pricing: { inputPerMTokUsd: 0.15, outputPerMTokUsd: 0.6 } },
       { id: "o1", name: "o1 (200K)", contextWindow: 200_000, bestFor: "Deep reasoning, complex analysis", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 60 } },
-      { id: "o1-mini", name: "o1 Mini (128K)", contextWindow: 128_000, bestFor: "Reasoning at lower cost", paid: true, pricing: { inputPerMTokUsd: 1.1, outputPerMTokUsd: 4.4 } },
+      { id: "gpt-4o-mini", name: "GPT-4o Mini (128K)", contextWindow: 128_000, bestFor: "Fast and cheap, good for bulk tasks", paid: true, pricing: { inputPerMTokUsd: 0.15, outputPerMTokUsd: 0.6 } },
     ],
   },
   {
     id: "anthropic",
     name: "Anthropic (Claude)",
     description:
-      "Claude 3.5 Sonnet, Opus, Haiku. Connect with an API key from console.anthropic.com, or sign in with your Claude plan (beta).",
+      "Claude Opus 4.1, Sonnet 4, Haiku. Connect with an API key from console.anthropic.com, or sign in with your Claude plan (beta).",
     authMethod: "api_key",
     protocol: "anthropic",
     validateApiKey: validateAnthropic,
@@ -222,9 +222,9 @@ export const PROVIDERS: ProviderDef[] = [
       experimental: true,
     },
     models: [
-      { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1 (200K)", contextWindow: 200_000, bestFor: "Most powerful Claude, deep reasoning, complex coding", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 75 } },
+      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4 (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
       { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku (200K)", contextWindow: 200_000, bestFor: "Fast and affordable, good for content", paid: true, pricing: { inputPerMTokUsd: 0.8, outputPerMTokUsd: 4 } },
-      { id: "claude-3-opus-20240229", name: "Claude 3 Opus (200K)", contextWindow: 200_000, bestFor: "Most capable Claude, deep reasoning", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 75 } },
     ],
   },
   {
@@ -282,10 +282,11 @@ export const PROVIDERS: ProviderDef[] = [
       tokenFlavor: "api_key_returned",
     },
     models: [
+      { id: "openai/o3", name: "o3 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful OpenAI, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 66 } },
+      { id: "anthropic/claude-opus-4.1", name: "Claude Opus 4.1 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful Claude via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 82 } },
       { id: "openai/gpt-4o", name: "GPT-4o via OpenRouter", contextWindow: 128_000, bestFor: "Best overall, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 2.75, outputPerMTokUsd: 11 } },
-      { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
+      { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4 via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
       { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
-      { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B via OpenRouter", contextWindow: 128_000, bestFor: "Open-source via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.12, outputPerMTokUsd: 0.3 } },
       { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
     ],
   },
@@ -320,7 +321,7 @@ export const PROVIDERS: ProviderDef[] = [
     },
     models: [
       { id: "gpt-4o", name: "GPT-4o via Copilot", contextWindow: 128_000, bestFor: "Best overall through your Copilot plan", paid: false },
-      { id: "claude-3.5-sonnet", name: "Claude 3.5 Sonnet via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
+      { id: "claude-sonnet-4", name: "Claude Sonnet 4 via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
       { id: "gemini-2.0-flash-001", name: "Gemini 2.0 Flash via Copilot", contextWindow: 1_000_000, bestFor: "Huge context through your Copilot plan", paid: false },
     ],
   },
