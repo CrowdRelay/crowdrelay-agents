@@ -42,12 +42,7 @@ Rules:
       "## Fan Statistics",
       fanStatsJson,
       "",
-      "Create a release campaign plan with:",
-      "1. **Release overview** — title, date, assets status, what's ready and what isn't",
-      "2. **Pre-release timeline** (4-6 weeks before) — press outreach, social teasers, fan engagement",
-      "3. **Release week** — daily action items",
-      "4. **Post-release** (2-3 weeks after) — follow-up content, measurement, momentum",
-      "5. **Risk flags** — anything that could delay or weaken the release",
+      "Create a release campaign plan with key milestones and risk flags.",
     ].join("\n");
   },
   outputFormat: "json",

@@ -75,13 +75,41 @@ export async function runTask(config: RunConfig): Promise<void> {
       contextWindow,
     });
 
+    // Guard: when every data tool returned empty arrays, the LLM has nothing
+    // grounded to work with. Hallucination is the likely outcome, so fail
+    // fast with a clear message rather than burning quota on a useless call.
+    const hasData = Object.values(bundle.data).some((v) => {
+      if (Array.isArray(v)) return v.length > 0;
+      if (v && typeof v === "object") return Object.keys(v).length > 0;
+      return v != null && v !== "";
+    });
+    if (!hasData) {
+      await setTaskMetadata(pool, taskId, {
+        context: {
+          budget_chars: bundle.budgetChars,
+          used_chars: bundle.usedChars,
+          blocks: bundle.truncationReport,
+        },
+        skipped: "no tenant data available for this template's data scope",
+      });
+      throw new Error(
+        "No tenant data available for this template's data scope. The workspace may not have events, outreach targets, or other required data yet.",
+      );
+    }
+
     const outputKind = template.outputKind as OutcomeKind | undefined;
     const systemPrompt =
       template.systemPrompt +
       (outputKind ? `\n\n${outputContractText(outputKind)}` : "") +
       "\n\nRULES: Use only the provided data — it comes from the band's read-only database, labeled per section. Never invent contacts, venues, dates, or numbers.";
-    const userPrompt = `${prompt}\n\nHere is the current data from the band's database:\n\n${renderContextSections(bundle)}${
-      outputKind ? "\n\nRespond with ONLY the JSON object described in the output contract." : ""
+
+    // Let the template format its own prompt from the seeded data, then
+    // append the structured-output instruction. Templates know how to
+    // present their data (e.g. press-pitch formats events + targets);
+    // the runner just supplies the raw tool outputs.
+    const templatePrompt = template.buildPrompt(prompt, bundle.data);
+    const userPrompt = `${templatePrompt}${
+      outputKind ? "\n\nRespond with ONLY the JSON object described in the output contract. No prose, no markdown fences." : ""
     }`;
 
     // 3. Resolve model + credential chain

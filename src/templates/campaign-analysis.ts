@@ -42,11 +42,7 @@ Rules:
       "## Outreach Targets",
       targetsJson,
       "",
-      "Analyze the campaign performance and provide:",
-      "1. **Key findings** — what the data shows (3-5 bullet points)",
-      "2. **What's working** — campaigns or channels with good delivery/engagement",
-      "3. **What needs attention** — high failure rates, stagnant growth, gaps",
-      "4. **Recommended actions** — 3-5 specific, actionable next steps",
+      "Analyze the campaign performance and identify key insights with recommended actions.",
     ].join("\n");
   },
   outputFormat: "json",

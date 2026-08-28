@@ -87,6 +87,10 @@ export async function callOpenAICompatible(params: CallParams): Promise<LlmRespo
     );
   }
 
+  if (!content || content.trim().length === 0) {
+    throw new Error("LLM returned empty content (model produced no output)");
+  }
+
   return {
     content: content.length > 65_000 ? content.slice(0, 65_000) + "\n\n[truncated]" : content,
     tokensIn: data.usage?.prompt_tokens ?? null,

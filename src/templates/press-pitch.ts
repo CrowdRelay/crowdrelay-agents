@@ -37,11 +37,7 @@ ${eventsSummary}
 ## Outreach Targets
 ${targetsSummary}
 
-Write the press pitch now. Format as:
-
-SUBJECT: <subject line>
-
-<pitch body>`;
+Write a press pitch based on this data. Use the outreach target IDs from the data above for target_refs.`;
   },
   outputFormat: "json",
 };

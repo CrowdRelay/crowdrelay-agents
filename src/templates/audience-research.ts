@@ -46,12 +46,7 @@ Rules:
       "## Growth Metrics (Autopilot-tracked)",
       growthJson,
       "",
-      "Analyze the audience and provide:",
-      "1. **Audience snapshot** — total fans, active rate, growth velocity",
-      "2. **Revenue correlation** — how ticket sales and merch relate to fan growth",
-      "3. **Growth trends** — what the autopilot metrics show over recent weeks",
-      "4. **Top opportunities** — 3-5 specific strategies to accelerate growth",
-      "5. **Data gaps** — what we should track but don't yet",
+      "Analyze the audience and identify fan segments with growth opportunities.",
     ].join("\n");
   },
   outputFormat: "json",

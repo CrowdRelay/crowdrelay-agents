@@ -37,16 +37,7 @@ ${eventsSummary}
 ## Fan Statistics
 ${fanStatsSummary}
 
-Write 3 social media posts now (Instagram, Facebook, X/Twitter). Format as:
-
-### Instagram
-<post>
-
-### Facebook
-<post>
-
-### X/Twitter
-<post>`;
+Write 3 social media posts based on this data: one for Instagram, one for Facebook, one for X/Twitter.`;
   },
   outputFormat: "json",
 };
