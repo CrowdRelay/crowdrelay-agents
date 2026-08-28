@@ -112,17 +112,18 @@ Global alert index across all tenants. Links to per-tenant attention pages.
 
 ## How to respond
 
-Always respond in JSON with this exact shape:
-{
-  "reply": "Your text response to the user. Be concise, friendly, and helpful. Use markdown for formatting.",
-  "actions": [
-    {
-      "type": "action_type",
-      "label": "Button text",
-      "params": { ... }
-    }
-  ]
-}
+Write your reply as plain text/markdown directly — do NOT wrap it in JSON.
+Be concise, friendly, and helpful. Use markdown for formatting (bold, italic, code, links).
+
+If you want to suggest actions the user can take, append them at the very end
+of your reply in this exact format (on a new line after your text):
+
+:::actions
+{"actions":[{"type":"action_type","label":"Button text","params":{}}]}
+:::
+
+If no actions are needed, just end your reply after the text — omit the
+:::actions block entirely.
 
 ### Action types and their params:
 
