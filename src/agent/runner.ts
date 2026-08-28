@@ -109,7 +109,7 @@ export async function runTask(config: RunConfig): Promise<void> {
     // the runner just supplies the raw tool outputs.
     const templatePrompt = template.buildPrompt(prompt, bundle.data);
     const userPrompt = `${templatePrompt}${
-      outputKind ? "\n\nRespond with ONLY the JSON object described in the output contract. No prose, no markdown fences." : ""
+      outputKind ? "\n\nRespond with ONLY the JSON object described in the output contract. No prose, no markdown fences, no pretty-printing — output compact JSON on a single line." : ""
     }`;
 
     // 3. Resolve model + credential chain

@@ -157,7 +157,16 @@ export interface StructuredParseResult {
 export function parseOutcome(raw: string): StructuredParseResult {
   const extracted = extractJson(raw);
   if (extracted === null) {
-    return { ok: false, error: "no JSON object found in model output" };
+    // Check if the output looks like truncated JSON — starts with { but
+    // never closes. This usually means the model hit its output token limit.
+    const hasOpenBrace = raw.includes("{");
+    const looksTruncated = hasOpenBrace && !raw.trim().endsWith("}");
+    return {
+      ok: false,
+      error: looksTruncated
+        ? "model output appears truncated (output token limit reached before JSON closed)"
+        : "no JSON object found in model output",
+    };
   }
   const versioned = typeof extracted === "object" && extracted !== null
     ? { schema_version: OUTCOME_SCHEMA_VERSION, ...(extracted as Record<string, unknown>) }

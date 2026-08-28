@@ -36,7 +36,7 @@ export async function callAnthropic(params: {
     },
     body: JSON.stringify({
       model: modelId,
-      max_tokens: 4096,
+      max_tokens: 8192,
       system,
       messages: [{ role: "user", content: userPrompt }],
     }),

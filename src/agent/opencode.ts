@@ -35,7 +35,7 @@ export async function callOpenAICompatible(params: CallParams): Promise<LlmRespo
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    max_tokens: 4096,
+    max_tokens: 8192,
     temperature: 0.7,
   };
 
