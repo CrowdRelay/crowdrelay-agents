@@ -265,8 +265,8 @@ export const PROVIDERS: ProviderDef[] = [
     validateApiKey: validateAnthropic,
     oauth: {
       kind: "authorization_code_pkce",
-      authorizeUrl: "https://claude.ai/api/oauth/authorize",
-      tokenUrl: "https://claude.ai/api/oauth/token",
+      authorizeUrl: "https://platform.claude.com/oauth/authorize",
+      tokenUrl: "https://platform.claude.com/v1/oauth/token",
       clientIdEnv: "ANTHROPIC_OAUTH_CLIENT_ID",
       scopes: ["user:inference"],
       tokenFlavor: "refresh_token",
