@@ -264,7 +264,7 @@ async function syncModels(
 
     await pool.query(
       `INSERT INTO agent_service_discovered_models
-        (source, model_id, name, context_window, pricing_prompt, pricing_completion, discovered_at, last_seen_at)
+        (source, model_id, name, context_window, pricing_prompt, pricing_completion)
        SELECT $1, * FROM unnest($2::text[], $3::text[], $4::int[], $5::text[], $6::text[])
        ON CONFLICT (source, model_id)
        DO UPDATE SET name = EXCLUDED.name, context_window = EXCLUDED.context_window,
