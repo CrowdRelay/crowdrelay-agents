@@ -468,10 +468,21 @@ export function providerSummaries() {
     oauthScopes: p.oauth?.scopes ?? [],
     oauth: p.oauth
       ? {
-          kind: p.oauth.kind,
+          // Map backend OAuthKind to frontend-friendly values.
+          // authorization_code_pkce / authorization_code → 'redirect'
+          // device_code → 'device'
+          kind: p.oauth.kind === "device_code" ? "device" : "redirect",
           experimental: p.oauth.experimental ?? false,
           scopes: p.oauth.scopes,
-          tokenFlavor: p.oauth.tokenFlavor,
+          // Map backend TokenFlavor to frontend-friendly values.
+          // refresh_token → 'refresh', api_key_returned → 'access',
+          // short_lived_exchange → 'id'
+          tokenFlavor:
+            p.oauth.tokenFlavor === "refresh_token"
+              ? "refresh"
+              : p.oauth.tokenFlavor === "api_key_returned"
+                ? "access"
+                : "id",
         }
       : null,
     supportsApiKeyPaste: typeof p.validateApiKey === "function",
