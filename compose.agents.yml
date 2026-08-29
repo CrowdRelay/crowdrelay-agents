@@ -21,6 +21,8 @@
 #   ANTHROPIC_OAUTH_CLIENT_ID / ANTHROPIC_OAUTH_CLIENT_SECRET — Anthropic OAuth (beta)
 #   OPENROUTER_OAUTH_CLIENT_ID / OPENROUTER_OAUTH_CLIENT_SECRET — OpenRouter OAuth
 #   GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET — GitHub Copilot OAuth (device code)
+#   REDDIT_SCRAPER_QUERIES — comma-separated subreddit search queries for the scraper ticker
+#   REDDIT_SCRAPER_ENABLED — "false" to disable both Reddit tickers (default: true)
 
 services:
   agent-service:
@@ -32,6 +34,8 @@ services:
       AGENT_SERVICE_AUTH_KEY: "${AGENT_SERVICE_AUTH_KEY:?AGENT_SERVICE_AUTH_KEY required}"
       AGENT_SERVICE_ENCRYPTION_KEY: "${AGENT_SERVICE_ENCRYPTION_KEY:?AGENT_SERVICE_ENCRYPTION_KEY required}"
       REDDIT_BROWSER_PROFILE_DIR: "/data/reddit-browser-profile"
+      REDDIT_SCRAPER_ENABLED: "${REDDIT_SCRAPER_ENABLED:-true}"
+      REDDIT_SCRAPER_QUERIES: "${REDDIT_SCRAPER_QUERIES:-}"
       OPENCODE_ZEN_TOKEN: "${OPENCODE_ZEN_TOKEN:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GROQ_API_KEY: "${GROQ_API_KEY:-}"

@@ -270,3 +270,99 @@ users can still paste API keys.
   fragile and may break without notice.
 - The OpenAI and Anthropic OAuth flows mimic their CLI clients' auth. These
   are not officially supported APIs and may break if the CLI auth changes.
+
+---
+
+## Reddit browser credentials (manual setup — requires your Reddit login)
+
+The Reddit scraper bypasses Reddit's JavaScript bot-detection by using a
+headless Chromium browser (Playwright) logged into a real Reddit account.
+This is NOT an OAuth flow — it stores login credentials (username/password
+or Google email/password for OAuth-based Reddit login) and uses them to
+establish a browser session that extracts cookies for API access.
+
+### Prerequisites
+
+- A Reddit account in good standing (not suspended, not rate-limited).
+- The agent-service running with Playwright + Chromium installed.
+- `AGENT_SERVICE_ENCRYPTION_KEY` set (credentials are encrypted at rest).
+
+### Option A: Reddit username + password (preferred — fewer bot checks)
+
+1. Ensure the agent-service is running on port 8095.
+2. Store the credentials via the API:
+
+```bash
+curl -X POST http://localhost:8095/reddit/credentials \
+  -H "Content-Type: application/json" \
+  -H "X-Workspace-Id: <your-workspace-id>" \
+  -d '{
+    "reddit_username": "<your-reddit-username>",
+    "reddit_password": "<your-reddit-password>"
+  }'
+```
+
+3. Verify the credentials were stored:
+
+```bash
+curl http://localhost:8095/reddit/cookies \
+  -H "X-Workspace-Id: <your-workspace-id>"
+```
+
+This should return `{"status": "no_cookies"}` initially — the browser session
+hasn't been established yet. The first scrape will trigger the login flow.
+
+4. Trigger a test scrape to verify the login works:
+
+```bash
+curl -X POST http://localhost:8095/reddit/scrape \
+  -H "Content-Type: application/json" \
+  -H "X-Workspace-Id: <your-workspace-id>" \
+  -d '{"queries": ["metal music"], "limit": 5}'
+```
+
+If successful, the response contains scraped posts and the cookies are now
+stored in `agent_service_reddit_cookies` with a 7-day TTL.
+
+### Option B: Google email + password (OAuth fallback)
+
+If your Reddit account uses Google OAuth for login (no Reddit password),
+provide Google credentials instead:
+
+```bash
+curl -X POST http://localhost:8095/reddit/credentials \
+  -H "Content-Type: application/json" \
+  -H "X-Workspace-Id: <your-workspace-id>" \
+  -d '{
+    "google_email": "<your-google-email>",
+    "google_password": "<your-google-password>"
+  }'
+```
+
+This is less reliable — Google's login flow has more bot-detection hurdles
+(2FA, device verification, etc.). If you hit issues, use Option A.
+
+### Cookie refresh
+
+Cookies expire after 7 days. The agent-service automatically refreshes them
+by re-running the browser login flow. If refresh fails (password changed,
+account suspended, etc.), the cookies are marked `expired` and you'll need
+to re-store credentials via the API above.
+
+### Environment variables
+
+Set these in `crowdrelay-agents/.env` (local) or the deployment environment:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AGENT_SERVICE_ENCRYPTION_KEY` | Yes | Encryption key for stored credentials |
+| `REDDIT_SCRAPER_QUERIES` | No | Default subreddit search queries (comma-separated) |
+
+### Security notes
+
+- Reddit credentials are encrypted at rest with `AGENT_SERVICE_ENCRYPTION_KEY`.
+- Credentials are never returned in API responses — only `{"status": "stored"}`.
+- Cookies are stored in `agent_service_reddit_cookies` with a 7-day TTL.
+- Use a dedicated Reddit account for scraping, not a personal account.
+- Reddit may rate-limit or suspend accounts that scrape aggressively. Keep
+  `REDDIT_SCRAPER_QUERIES` reasonable (3-5 queries, not 50).

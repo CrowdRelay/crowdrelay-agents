@@ -20,10 +20,14 @@ Rules:
 - Reference specific show details (date, venue, lineup, ticket link if available)
 - If fan stats show growth, celebrate it naturally
 - Write in the language that matches the event's market
+- ALWAYS include a call-to-action to join the band's Signal community (the band's direct fan channel for show alerts, ticket presales, and exclusive content). Use the smart_link from the data as the signup URL. If no smart_link is provided, use a placeholder: https://signal.virya.music
 - Provide 3 variants: one for Instagram, one for Facebook, one for X/Twitter`,
   buildPrompt(input, data) {
     const events = (data.list_events as unknown[]) ?? [];
     const fanStats = (data.fan_stats as Record<string, unknown>) ?? {};
+    const workspace = (data.get_workspace_profile as Record<string, unknown>) ?? {};
+    const smartLinks = (workspace.smart_links as Array<{ url?: string; label?: string }>) ?? [];
+    const signalLink = smartLinks.find((s) => s.label?.toLowerCase().includes("signal"))?.url ?? "";
     const eventsSummary = JSON.stringify(events, null, 2);
     const fanStatsSummary = JSON.stringify(fanStats, null, 2);
 
@@ -37,7 +41,10 @@ ${eventsSummary}
 ## Fan Statistics
 ${fanStatsSummary}
 
-Write 3 social media posts based on this data: one for Instagram, one for Facebook, one for X/Twitter.`;
+## Signal Signup Link
+${signalLink || "https://signal.virya.music"}
+
+Write 3 social media posts based on this data: one for Instagram, one for Facebook, one for X/Twitter. Each post must include the Signal signup link.`;
   },
   outputFormat: "json",
 };
