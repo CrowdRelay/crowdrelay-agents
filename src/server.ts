@@ -13,6 +13,9 @@ import { registerOAuthRoutes } from "./routes/oauth.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerPremiumRoutes } from "./routes/premium.js";
+import { registerGrowthRoutes } from "./routes/growth.js";
+import { registerBrainRoutes } from "./routes/brain.js";
+import { registerUsageRoutes } from "./routes/usage.js";
 import { registerRedditRoutes } from "./routes/reddit.js";
 import { runDiscoveryCycle } from "./agent/discovery.js";
 import { runScraperCycle } from "./agent/reddit-scraper.js";
@@ -132,6 +135,27 @@ async function main(): Promise<void> {
 
   // Premium AI routes (auth required — usage tracking + connected models)
   registerPremiumRoutes(app, {
+    pool,
+    authKey: config.authKey,
+    defaultMonthlyBudgetMicroUsd: config.defaultMonthlyBudgetMicroUsd,
+  });
+
+  // Growth funnel routes (auth required — community discovery + worker run
+  // funnel data for the growth funnel dashboard)
+  registerGrowthRoutes(app, {
+    pool,
+    authKey: config.authKey,
+  });
+
+  // Brain transparency routes (auth required — decision log for the brain
+  // transparency panel showing why the brain dispatched each worker)
+  registerBrainRoutes(app, {
+    pool,
+    authKey: config.authKey,
+  });
+
+  // Usage analytics routes (auth required — cost-ROI + model routing + daily spend)
+  registerUsageRoutes(app, {
     pool,
     authKey: config.authKey,
     defaultMonthlyBudgetMicroUsd: config.defaultMonthlyBudgetMicroUsd,

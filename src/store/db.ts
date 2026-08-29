@@ -132,6 +132,11 @@ export async function runMigrations(pool: DbPool): Promise<void> {
       cost_micro_usd BIGINT NOT NULL DEFAULT 0,
       UNIQUE (workspace_id, day, provider, model_id)
     )`,
+    // Index for the usage analytics dashboard — daily spend trend query
+    // filters by workspace_id and day >= range. Without this index the query
+    // scans all rows for the workspace.
+    `CREATE INDEX IF NOT EXISTS agent_service_usage_workspace_day_idx
+      ON agent_service_usage (workspace_id, day DESC)`,
     `CREATE TABLE IF NOT EXISTS agent_service_budgets (
       workspace_id           UUID PRIMARY KEY,
       monthly_cost_micro_usd BIGINT NOT NULL CHECK (monthly_cost_micro_usd > 0),
