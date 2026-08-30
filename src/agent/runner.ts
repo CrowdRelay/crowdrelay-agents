@@ -32,6 +32,8 @@ export interface RunConfig {
   outcomesEnabled: boolean;
   /** Intelligent token optimization: "basic" uses free models, "premium" routes to connected paid providers. */
   tier: "basic" | "premium";
+  /** Trace ID from the autopilot trace spine, for causal correlation in agent_outcomes. */
+  traceId?: string | null;
 }
 
 interface ChainEntry {
@@ -277,6 +279,7 @@ export async function runTask(config: RunConfig): Promise<void> {
             resultId,
             envelope: parsed.envelope,
             client,
+            traceId: config.traceId,
           });
           structuredOk = true;
           await client.query(

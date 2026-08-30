@@ -215,6 +215,7 @@ export function registerTaskRoutes(
       fallbackGroqKey: opts.fallbackGroqKey,
       outcomesEnabled: opts.outcomesEnabled,
       tier: parsed.data.tier,
+      traceId: typeof request.headers["x-trace-id"] === "string" ? request.headers["x-trace-id"] as string : null,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
     }).finally(() => {

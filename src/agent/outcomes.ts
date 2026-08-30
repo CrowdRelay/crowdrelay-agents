@@ -81,16 +81,18 @@ export async function emitOutcomes(params: {
   resultId: string;
   envelope: OutcomeEnvelopeParsed;
   client: import("pg").PoolClient;
+  traceId?: string | null;
 }): Promise<number> {
-  const { workspaceId, taskId, resultId, envelope, client } = params;
+  const { workspaceId, taskId, resultId, envelope, client, traceId } = params;
+  const traceUuid = traceId ?? null;
   let emitted = 0;
 
   if (envelope.items.length === 0) {
     await client.query(
       `INSERT INTO agent_outcomes
         (id, workspace_id, task_id, result_id, kind, schema_version, payload,
-         confidence_basis_points, idempotency_key)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
+         confidence_basis_points, idempotency_key, trace_id)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (workspace_id, idempotency_key) DO NOTHING`,
       [
         workspaceId,
@@ -101,6 +103,7 @@ export async function emitOutcomes(params: {
         JSON.stringify({ rationale: envelope.rationale, kind: envelope.kind }),
         envelope.confidence_basis_points,
         `agent:${taskId}:envelope`,
+        traceUuid,
       ],
     );
     return 1;
@@ -112,8 +115,8 @@ export async function emitOutcomes(params: {
     const result = await client.query(
       `INSERT INTO agent_outcomes
         (id, workspace_id, task_id, result_id, kind, schema_version, payload,
-         confidence_basis_points, idempotency_key, content_hash)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+         confidence_basis_points, idempotency_key, content_hash, trace_id)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT DO NOTHING`,
       [
         workspaceId,
@@ -125,6 +128,7 @@ export async function emitOutcomes(params: {
         envelope.confidence_basis_points,
         `agent:${taskId}:${index}`,
         contentHash,
+        traceUuid,
       ],
     );
     emitted += result.rowCount ?? 0;
