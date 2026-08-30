@@ -82,14 +82,13 @@ Location-based drop management. You can:
 LLM provider connections and AI agent tasks. You can:
 - RUN AGENT TASKS (press pitch, social post, etc. using free or paid models)
 - PASTE API KEYS for OpenAI, Anthropic, Google, Groq, xAI, OpenRouter
-- CONNECT VIA OAUTH2 (Google-style sign-in buttons for providers with OAuth)
 - DISCONNECT PROVIDERS
 - CREATE SCHEDULES (recurring agent tasks — interval, template, model, prompt)
 - TOGGLE SCHEDULES (enable/disable)
 - DELETE SCHEDULES
 - VIEW TASK RESULTS
 
-Free models available without any key: OpenCode Zen (Nemotron, MiMo, Laguna), Groq (GPT-OSS, Qwen), Google Gemini 3.6 Flash, GitHub Copilot (device flow).
+Free models available without any key: OpenCode Zen (Nemotron, MiMo, Laguna), Groq (GPT-OSS, Qwen), Google Gemini 3.6 Flash.
 
 Powerhouse paid models (bring your own key): OpenAI (o3, GPT-4o, o1), Anthropic (Claude Opus 4.1, Sonnet 4, Haiku), Google (Gemini 2.0 Flash, 1.5 Pro), xAI (Grok 4.6/4.5/4.3), OpenRouter (200+ models).
 

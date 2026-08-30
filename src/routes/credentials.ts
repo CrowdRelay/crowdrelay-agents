@@ -9,8 +9,6 @@ import {
   getConnectedProviders,
 } from "../store/credentials.js";
 import { findProvider, providerSummaries, availableModels } from "../providers/registry.js";
-import { ensureFreshToken } from "../providers/oauth/refresh.js";
-import type { OAuthClientConfig } from "../config.js";
 import { decryptWithRotation } from "../crypto.js";
 import { extractWorkspaceId } from "../auth.js";
 
@@ -30,15 +28,11 @@ export function registerCredentialRoutes(
     authKey: string;
     encryptionKey: string;
     previousEncryptionKey: string | null;
-    oauthClients: Record<string, OAuthClientConfig>;
   },
 ) {
   // List providers (no auth — provider catalog is static)
   app.get("/providers", async (_request, reply) => {
-    const summaries = providerSummaries().map((p) => ({
-      ...p,
-      oauthAvailable: Boolean(opts.oauthClients[p.id]),
-    }));
+    const summaries = providerSummaries();
     return reply.send({ providers: summaries });
   });
 
@@ -55,8 +49,7 @@ export function registerCredentialRoutes(
   });
 
   // Paste an API key and validate it. Allowed for every provider that ships a
-  // validator — including OAuth providers, where a pasted key is the
-  // deliberate fallback for plan-quota flows.
+  // validator function.
   app.post("/credentials", async (request, reply) => {
     let workspaceId: string;
     try {
@@ -133,8 +126,7 @@ export function registerCredentialRoutes(
   );
 
   // Re-validate an existing credential. API keys run the provider's test
-  // call; OAuth credentials force a token refresh, which fails loudly on a
-  // revoked grant.
+  // call to confirm the key is still active.
   app.post<{ Params: { provider: string } }>(
     "/credentials/:provider/validate",
     async (request, reply) => {
@@ -178,19 +170,6 @@ export function registerCredentialRoutes(
           );
 
           return reply.send(result);
-        }
-
-        if (provider.oauth) {
-          await ensureFreshToken(
-            opts.pool,
-            workspaceId,
-            provider.id,
-            opts.encryptionKey,
-            opts.previousEncryptionKey,
-            { force: true },
-          );
-          await updateCredentialStatus(opts.pool, workspaceId, provider.id, "active", null);
-          return reply.send({ valid: true });
         }
 
         return reply.code(400).send({ error: "provider does not support validation" });

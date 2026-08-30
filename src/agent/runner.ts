@@ -1,12 +1,11 @@
 import type { DbPool } from "../store/db.js";
 import type { AgentTemplate } from "../templates/catalog.js";
 import { PROVIDERS, type ProviderDef, type ProviderModel } from "../providers/registry.js";
-import { getConnectedProviders, getCredential, getOAuthCredentialRow } from "../store/credentials.js";
+import { getConnectedProviders, getCredential } from "../store/credentials.js";
 import { updateTaskStatus, setTaskMetadata } from "../store/tasks.js";
 import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
 import { callAnthropic } from "./anthropic.js";
 import { callDevinSession } from "./cognition.js";
-import { ensureFreshToken } from "../providers/oauth/refresh.js";
 import { buildContext, renderContextSections } from "./context.js";
 import { parseOutcome, outputContractText, type OutcomeKind } from "./structured.js";
 import { emitOutcomes } from "./outcomes.js";
@@ -57,7 +56,7 @@ interface AttemptRecord {
  * Orchestrates a single agent task:
  * 1. Pull tenant data via MCP tools through the budgeted context builder
  * 2. Build the full prompt from template + data + operator input
- * 3. Resolve the model + credential chain (OAuth refresh aware)
+ * 3. Resolve the model + credential chain (API key lookup)
  * 4. Call the LLM (fallback chain, JSON mode when the template wants structure)
  * 5. For structured outcomes: verify the response with a free-tier model
  *    before accepting it. Rejected responses fall through to the next model.
@@ -356,8 +355,8 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
 
   const requested = findProviderForModel(modelId);
 
-  // 1. Requested model first. OAuth credentials go through ensureFreshToken
-  //    (which refreshes or re-derives as needed); plain keys decrypt directly.
+  // 1. Requested model first. API keys are decrypted directly from the
+  //    credentials store.
   if (requested) {
     const key = await resolveApiKey(requested.provider, config, connectedProviders, credentialCache);
     if (key !== undefined) {
@@ -521,14 +520,12 @@ async function callAgenticSession(
   }
 
   // The org ID is stored in the provider_account column of the credential.
-  const credRow = await getOAuthCredentialRow(
-    config.pool,
-    config.workspaceId,
-    entry.provider.id,
-    config.encryptionKey,
-    config.previousEncryptionKey,
+  const { rows } = await config.pool.query(
+    `SELECT provider_account FROM agent_service_credentials
+     WHERE workspace_id = $1 AND provider = $2 AND status = 'active'`,
+    [config.workspaceId, entry.provider.id],
   );
-  const orgId = credRow?.providerAccount;
+  const orgId = rows[0]?.provider_account as string | null;
   if (!orgId) {
     throw new Error("No organization ID found for Cognition/Devin credential");
   }
@@ -606,42 +603,17 @@ async function resolveApiKey(
   }
 
   if (connectedProviders.includes(provider.id)) {
-    // OAuth credentials (and Copilot's exchanged token) resolve through the
-    // refresh engine; api_key flavors fall through to the plain decrypt path.
-    const resolved = await ensureFreshToken(
+    // API key providers: decrypt the stored key directly.
+    const cred = await getCredential(
       config.pool,
       config.workspaceId,
       provider.id,
       config.encryptionKey,
       config.previousEncryptionKey,
-    ).catch((err: unknown) => {
-      console.error(`token resolution for ${provider.id} failed:`, err);
-      return null;
-    });
-    if (resolved) {
-      credentialCache?.set(provider.id, resolved.token);
-      return resolved.token;
-    }
-
-    // Only fall back to the raw stored credential for api_key providers.
-    // For OAuth/refresh_token providers, the encrypted_value is the refresh
-    // token — returning it as a bearer would leak it and guarantee a 401.
-    if (provider.authMethod === "api_key") {
-      const cred = await getCredential(
-        config.pool,
-        config.workspaceId,
-        provider.id,
-        config.encryptionKey,
-        config.previousEncryptionKey,
-      );
-      const result = cred?.decryptedValue ?? undefined;
-      credentialCache?.set(provider.id, result);
-      return result;
-    }
-
-    // OAuth refresh failed — skip this provider rather than leak the refresh token.
-    credentialCache?.set(provider.id, undefined);
-    return undefined;
+    );
+    const result = cred?.decryptedValue ?? undefined;
+    credentialCache?.set(provider.id, result);
+    return result;
   }
 
   // Platform-level env defaults. Return undefined (not null) when absent so

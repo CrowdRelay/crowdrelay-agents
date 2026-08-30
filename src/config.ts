@@ -1,10 +1,5 @@
 import { env } from "node:process";
 
-export interface OAuthClientConfig {
-  clientId: string;
-  clientSecret: string | null;
-}
-
 export interface Config {
   bind: string;
   databaseUrl: string;
@@ -17,12 +12,6 @@ export interface Config {
   opencodeServerUrl: string | null;
   googleApiKey: string | null;
   groqApiKey: string | null;
-  /**
-   * Per-provider OAuth clients, keyed by provider id. A provider's OAuth flow
-   * is available only when its client id is configured here. Secrets stay in
-   * the environment; nothing about a client is persisted.
-   */
-  oauthClients: Record<string, OAuthClientConfig>;
   /** When "false", the runner stops writing agent_outcomes rows (kill switch). */
   outcomesEnabled: boolean;
   /** When "false", the schedule ticker does not create tasks. */
@@ -43,25 +32,7 @@ function optional(name: string): string | null {
   return env[name] ?? null;
 }
 
-function oauthClient(prefix: string): OAuthClientConfig | null {
-  const clientId = optional(`${prefix}_OAUTH_CLIENT_ID`);
-  if (!clientId) return null;
-  return { clientId, clientSecret: optional(`${prefix}_OAUTH_CLIENT_SECRET`) };
-}
-
 export function loadConfig(): Config {
-  const oauthClients: Record<string, OAuthClientConfig> = {};
-  for (const [providerId, prefix] of [
-    ["google", "GOOGLE"],
-    ["openrouter", "OPENROUTER"],
-    ["anthropic", "ANTHROPIC"],
-    ["openai", "OPENAI"],
-    ["github-copilot", "GITHUB"],
-  ] as const) {
-    const client = oauthClient(prefix);
-    if (client) oauthClients[providerId] = client;
-  }
-
   const encryptionKey = required("AGENT_SERVICE_ENCRYPTION_KEY");
   if (!/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
     throw new Error(
@@ -96,7 +67,6 @@ export function loadConfig(): Config {
     opencodeServerUrl: optional("OPENCODE_SERVER_URL"),
     googleApiKey: optional("GOOGLE_API_KEY"),
     groqApiKey: optional("GROQ_API_KEY"),
-    oauthClients,
     outcomesEnabled: optional("AGENT_OUTCOMES_ENABLED") !== "false",
     schedulerEnabled: optional("AGENT_SCHEDULER_ENABLED") !== "false",
     defaultMonthlyBudgetMicroUsd: parseBudgetMicroUsd(

@@ -1,40 +1,13 @@
 /**
  * Provider registry. Each provider knows:
  * - Which models it offers
- * - How to authenticate (api_key paste vs oauth)
+ * - How to authenticate (api_key paste or none)
  * - How to validate a credential
  * - Which LLM protocol it speaks (openai-compatible vs anthropic-native)
- *
- * OAuth flows come in three flavors (`tokenFlavor`):
- * - "refresh_token"          — standard OAuth2, access token + refresh token
- * - "api_key_returned"       — the exchange returns a long-lived API key
- * - "short_lived_exchange"   — a stored user token is periodically exchanged
- *                              for a short-lived service token (Copilot)
- *
- * `experimental: true` marks plan-quota flows that impersonate a first-party
- * CLI client (Claude Code, Codex, Copilot). They are functional but
- * ToS-gray: the UI labels them beta and an API key must always remain a
- * viable alternative for the same provider.
  */
 
-export type AuthMethod = "api_key" | "oauth" | "none";
+export type AuthMethod = "api_key" | "none";
 export type LlmProtocol = "openai" | "anthropic" | "google";
-export type OAuthKind = "authorization_code_pkce" | "authorization_code" | "device_code";
-export type TokenFlavor = "refresh_token" | "api_key_returned" | "short_lived_exchange";
-
-export interface OAuthDef {
-  kind: OAuthKind;
-  authorizeUrl: string;
-  tokenUrl: string;
-  /** Env var holding this provider's client id — never a shared client. */
-  clientIdEnv: string;
-  clientSecretEnv?: string;
-  scopes: string[];
-  extraAuthorizeParams?: Record<string, string>;
-  tokenFlavor: TokenFlavor;
-  /** CLI-mimic flows using the user's plan quota. Surfaced as beta in the UI. */
-  experimental?: boolean;
-}
 
 export interface ProviderModel {
   id: string;
@@ -61,17 +34,12 @@ export interface ProviderDef {
   models: ProviderModel[];
   /** For api_key providers: validate by making a test API call */
   validateApiKey?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
-  /** For oauth providers: the full flow definition */
-  oauth?: OAuthDef;
-  /** Legacy field kept for frontend compat; oauth.scopes is authoritative. */
-  oauthScopes?: string[];
   /** Whether this provider offers free models without any credential */
   freeTier?: boolean;
   /**
    * Tier controls which UI tab a provider appears in:
-   * - "premium": OAuth-capable providers that appear in the Premium AI tab.
-   *   These support OAuth sign-in (Google account, ChatGPT plan, etc.) AND
-   *   API key paste as a fallback. The brain routes complex tasks to these.
+   * - "premium": providers that appear in the Premium AI tab. These support
+   *   API key paste. The brain routes complex tasks to these.
    * - "free": API-key-only or no-key providers that appear in the Providers
    *   tab. These are developer-accessible models for simpler tasks.
    */
@@ -212,6 +180,17 @@ async function validateCognition(key: string): Promise<{ valid: boolean; error?:
   }
 }
 
+/**
+ * Basic non-empty check for providers that don't expose a public validation
+ * endpoint (e.g. GitHub Copilot). A real API key is always non-empty.
+ */
+async function validateNonEmpty(key: string): Promise<{ valid: boolean; error?: string }> {
+  if (!key || key.trim().length === 0) {
+    return { valid: false, error: "API key is empty" };
+  }
+  return { valid: true };
+}
+
 // --- Provider definitions ---
 
 export const PROVIDERS: ProviderDef[] = [
@@ -233,20 +212,11 @@ export const PROVIDERS: ProviderDef[] = [
     id: "openai",
     name: "OpenAI",
     description:
-      "GPT-4o, o3, o1, and more. Connect with an API key from platform.openai.com, or sign in with your ChatGPT plan (beta).",
+      "GPT-4o, o3, o1, and more. Connect with an API key from platform.openai.com.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
     validateApiKey: validateOpenAI,
-    oauth: {
-      kind: "authorization_code_pkce",
-      authorizeUrl: "https://auth.openai.com/oauth/authorize",
-      tokenUrl: "https://auth.openai.com/oauth/token",
-      clientIdEnv: "OPENAI_OAUTH_CLIENT_ID",
-      scopes: ["openid", "profile", "email", "offline_access"],
-      tokenFlavor: "refresh_token",
-      experimental: true,
-    },
     models: [
       { id: "o3", name: "o3 (200K)", contextWindow: 200_000, bestFor: "Most powerful OpenAI, deep reasoning, complex analysis", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 60 } },
       { id: "gpt-4o", name: "GPT-4o (128K)", contextWindow: 128_000, bestFor: "Best overall, multimodal, fast", paid: true, pricing: { inputPerMTokUsd: 2.5, outputPerMTokUsd: 10 } },
@@ -258,20 +228,11 @@ export const PROVIDERS: ProviderDef[] = [
     id: "anthropic",
     name: "Anthropic (Claude)",
     description:
-      "Claude Opus 4.1, Sonnet 4, Haiku. Connect with an API key from console.anthropic.com, or sign in with your Claude plan (beta).",
+      "Claude Opus 4.1, Sonnet 4, Haiku. Connect with an API key from console.anthropic.com.",
     authMethod: "api_key",
     protocol: "anthropic",
     tier: "premium",
     validateApiKey: validateAnthropic,
-    oauth: {
-      kind: "authorization_code_pkce",
-      authorizeUrl: "https://platform.claude.com/oauth/authorize",
-      tokenUrl: "https://platform.claude.com/v1/oauth/token",
-      clientIdEnv: "ANTHROPIC_OAUTH_CLIENT_ID",
-      scopes: ["user:inference"],
-      tokenFlavor: "refresh_token",
-      experimental: true,
-    },
     models: [
       { id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1 (200K)", contextWindow: 200_000, bestFor: "Most powerful Claude, deep reasoning, complex coding", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 75 } },
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4 (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
@@ -281,21 +242,11 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "google",
     name: "Google (Gemini)",
-    description: "Gemini 2.0 Flash, 1.5 Pro. Connect via OAuth or paste an API key from AI Studio.",
+    description: "Gemini 2.0 Flash, 1.5 Pro. Paste an API key from AI Studio.",
     authMethod: "api_key",
     protocol: "openai", // Google exposes an OpenAI-compatible endpoint
     tier: "premium",
     validateApiKey: validateGoogle,
-    oauth: {
-      kind: "authorization_code",
-      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-      tokenUrl: "https://oauth2.googleapis.com/token",
-      clientIdEnv: "GOOGLE_OAUTH_CLIENT_ID",
-      clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
-      scopes: ["https://www.googleapis.com/auth/generative-language"],
-      extraAuthorizeParams: { access_type: "offline", prompt: "consent" },
-      tokenFlavor: "refresh_token",
-    },
     models: [
       { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (1M)", contextWindow: 1_000_000, bestFor: "Very fast, huge context, multilingual", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
       { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro (2M)", contextWindow: 2_000_000, bestFor: "Largest context window, complex analysis", paid: true, pricing: { inputPerMTokUsd: 1.25, outputPerMTokUsd: 5 } },
@@ -321,19 +272,11 @@ export const PROVIDERS: ProviderDef[] = [
     id: "openrouter",
     name: "OpenRouter (All Models)",
     description:
-      "One connection unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Sign in with OpenRouter (official OAuth) or paste a key.",
-    authMethod: "oauth",
+      "One connection unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Paste your API key from openrouter.ai/keys.",
+    authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
     validateApiKey: validateOpenRouter,
-    oauth: {
-      kind: "authorization_code_pkce",
-      authorizeUrl: "https://openrouter.ai/auth",
-      tokenUrl: "https://openrouter.ai/api/v1/auth/keys",
-      clientIdEnv: "OPENROUTER_OAUTH_CLIENT_ID",
-      scopes: [],
-      tokenFlavor: "api_key_returned",
-    },
     models: [
       { id: "openai/o3", name: "o3 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful OpenAI, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 66 } },
       { id: "anthropic/claude-opus-4.1", name: "Claude Opus 4.1 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful Claude via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 82 } },
@@ -360,21 +303,13 @@ export const PROVIDERS: ProviderDef[] = [
   },
   {
     id: "github-copilot",
-    name: "GitHub Copilot (beta)",
+    name: "GitHub Copilot",
     description:
-      "Use your Copilot subscription to run models like GPT-4o and Claude. Connect with your GitHub account (beta).",
-    authMethod: "oauth",
+      "Use your Copilot subscription to run models like GPT-4o and Claude. Paste your Copilot API key.",
+    authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
-    oauth: {
-      kind: "device_code",
-      authorizeUrl: "https://github.com/login/device/code",
-      tokenUrl: "https://github.com/login/oauth/access_token",
-      clientIdEnv: "GITHUB_OAUTH_CLIENT_ID",
-      scopes: ["read:user"],
-      tokenFlavor: "short_lived_exchange",
-      experimental: true,
-    },
+    validateApiKey: validateNonEmpty,
     models: [
       { id: "gpt-4o", name: "GPT-4o via Copilot", contextWindow: 128_000, bestFor: "Best overall through your Copilot plan", paid: false },
       { id: "claude-sonnet-4", name: "Claude Sonnet 4 via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
@@ -453,8 +388,6 @@ export function availableModels(connectedProviderIds: string[]): Array<ProviderM
 
 /**
  * Returns provider summaries for the frontend connection UI.
- * `oauthAvailable` is filled in by the credentials route, which knows which
- * OAuth clients this deployment has configured.
  */
 export function providerSummaries() {
   return PROVIDERS.map((p) => ({
@@ -465,26 +398,6 @@ export function providerSummaries() {
     freeTier: p.freeTier ?? false,
     tier: p.tier,
     modelCount: p.models.length,
-    oauthScopes: p.oauth?.scopes ?? [],
-    oauth: p.oauth
-      ? {
-          // Map backend OAuthKind to frontend-friendly values.
-          // authorization_code_pkce / authorization_code → 'redirect'
-          // device_code → 'device'
-          kind: p.oauth.kind === "device_code" ? "device" : "redirect",
-          experimental: p.oauth.experimental ?? false,
-          scopes: p.oauth.scopes,
-          // Map backend TokenFlavor to frontend-friendly values.
-          // refresh_token → 'refresh', api_key_returned → 'access',
-          // short_lived_exchange → 'id'
-          tokenFlavor:
-            p.oauth.tokenFlavor === "refresh_token"
-              ? "refresh"
-              : p.oauth.tokenFlavor === "api_key_returned"
-                ? "access"
-                : "id",
-        }
-      : null,
     supportsApiKeyPaste: typeof p.validateApiKey === "function",
   }));
 }

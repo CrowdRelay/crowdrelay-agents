@@ -2,7 +2,7 @@
  * Reddit routes.
  *
  * Two eras coexist here:
- *  - Cookie management (/reddit/status, /reddit/cookies, /reddit/login):
+ *  - Cookie management (/reddit/status, /reddit/cookies):
  *    cookies for the Rust worker's reqwest calls. Kept as a fallback path.
  *  - Browser-as-API (/reddit/credentials, /reddit/scrape, /reddit/post,
  *    /reddit/metrics, /reddit/scrape/results): the preferred path. A
@@ -13,11 +13,9 @@
 import type { FastifyInstance } from "fastify";
 import { extractWorkspaceId } from "../auth.js";
 import type { DbPool } from "../store/db.js";
-import type { OAuthClientConfig } from "../config.js";
 import {
   getRedditCookies,
   getRedditCookieStatus,
-  refreshRedditCookies,
 } from "../agent/reddit-scraper.js";
 import {
   RedditBrowserError,
@@ -35,11 +33,8 @@ export function registerRedditRoutes(
     authKey: string;
     encryptionKey: string;
     previousEncryptionKey: string | null;
-    oauthClients: Record<string, OAuthClientConfig>;
   },
 ) {
-  const googleClient = opts.oauthClients["google"] ?? null;
-
   function requireWorkspaceId(request: {
     headers: Record<string, string | string[] | undefined>;
   }): { workspaceId?: string; errorReply?: { statusCode: number; message: string } } {
@@ -90,50 +85,14 @@ export function registerRedditRoutes(
     return reply.send(cookies);
   });
 
-  /**
-   * POST /reddit/login — triggers a manual cookie refresh.
-   * Launches a headless browser, logs into Reddit via Google OAuth,
-   * and stores fresh cookies. Requires Google OAuth client + credentials.
-   */
-  app.post("/reddit/login", async (request, reply) => {
-    const { workspaceId, errorReply } = requireWorkspaceId(request);
-    if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
-
-    if (!googleClient) {
-      return reply.code(503).send({ error: "google oauth client not configured" });
-    }
-
-    // Credentials are passed in the request body (operator-initiated).
-    // In production, these come from the operator's Google account that
-    // is linked to the Reddit account.
-    const body = request.body as { google_email?: string; google_password?: string } | null;
-    if (!body?.google_email || !body?.google_password) {
-      return reply.code(400).send({ error: "google_email and google_password are required" });
-    }
-
-    try {
-      const result = await refreshRedditCookies(
-        opts.pool,
-        workspaceId as string,
-        googleClient,
-        body.google_email,
-        body.google_password,
-      );
-      return reply.send(result);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown error";
-      return reply.code(502).send({ error: `reddit login failed: ${message}` });
-    }
-  });
-
   // -------------------------------------------------------------------------
   // Browser-as-API endpoints
   // -------------------------------------------------------------------------
 
   /**
    * POST /reddit/credentials — stores Reddit login credentials (encrypted).
-   * Accepts either a Reddit username/password (preferred: fewer bot checks)
-   * or a Google email/password (OAuth fallback). Never returns secrets.
+   * Accepts a Reddit username/password (preferred: fewer bot checks).
+   * Never returns secrets.
    */
   app.post("/reddit/credentials", async (request, reply) => {
     const { workspaceId, errorReply } = requireWorkspaceId(request);
@@ -141,23 +100,16 @@ export function registerRedditRoutes(
 
     const body = request.body as RedditCredentials | null;
     const hasReddit = !!body?.reddit_username && !!body?.reddit_password;
-    const hasGoogle = !!body?.google_email && !!body?.google_password;
-    if (!hasReddit && !hasGoogle) {
+    if (!hasReddit) {
       return reply.code(400).send({
-        error:
-          "provide reddit_username + reddit_password (preferred) or google_email + google_password",
+        error: "provide reddit_username + reddit_password",
       });
     }
 
-    const credentials: RedditCredentials = {};
-    if (hasReddit) {
-      credentials.reddit_username = body?.reddit_username;
-      credentials.reddit_password = body?.reddit_password;
-    }
-    if (hasGoogle) {
-      credentials.google_email = body?.google_email;
-      credentials.google_password = body?.google_password;
-    }
+    const credentials: RedditCredentials = {
+      reddit_username: body?.reddit_username,
+      reddit_password: body?.reddit_password,
+    };
 
     await storeRedditCredentials(opts.pool, workspaceId as string, credentials, opts.encryptionKey);
     // Force the shared browser session to re-establish with the new creds.

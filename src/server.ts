@@ -9,7 +9,6 @@ import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerScheduleRoutes } from "./routes/schedules.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerCredentialRoutes } from "./routes/credentials.js";
-import { registerOAuthRoutes } from "./routes/oauth.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerPremiumRoutes } from "./routes/premium.js";
@@ -18,7 +17,6 @@ import { registerBrainRoutes } from "./routes/brain.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerRedditRoutes } from "./routes/reddit.js";
 import { runDiscoveryCycle } from "./agent/discovery.js";
-import { runScraperCycle } from "./agent/reddit-scraper.js";
 import { scrapeRedditQueries, getRedditBrowser } from "./agent/reddit-browser.js";
 import { recoverStaleTasks, createTask, claimQueuedTask, updateTaskStatus } from "./store/tasks.js";
 import { claimDueSchedules } from "./agent/schedules.js";
@@ -84,15 +82,6 @@ async function main(): Promise<void> {
     authKey: config.authKey,
     encryptionKey: config.encryptionKey,
     previousEncryptionKey: config.previousEncryptionKey,
-    oauthClients: config.oauthClients,
-  });
-
-  // OAuth routes (auth required for start, callback uses state token)
-  const oauthCleanup = registerOAuthRoutes(app, {
-    pool,
-    authKey: config.authKey,
-    encryptionKey: config.encryptionKey,
-    oauthClients: config.oauthClients,
   });
 
   // Template routes (auth required)
@@ -168,7 +157,6 @@ async function main(): Promise<void> {
     authKey: config.authKey,
     encryptionKey: config.encryptionKey,
     previousEncryptionKey: config.previousEncryptionKey,
-    oauthClients: config.oauthClients,
   });
 
   const [host, portStr] = config.bind.split(":");
@@ -353,34 +341,6 @@ async function main(): Promise<void> {
   discoveryTimer = setInterval(discoveryTick, 24 * 60 * 60 * 1000);
   discoveryTimer.unref();
 
-  // Reddit scraper ticker — every 6 hours, refresh expired Reddit cookies.
-  // The scraper launches a headless Chromium, logs into Reddit via Google
-  // OAuth, and stores session cookies for the Rust worker to use. Only
-  // runs when a Google OAuth client is configured and there are workspaces
-  // with expired/missing cookies.
-  // Kill switch: set REDDIT_SCRAPER_ENABLED=false to disable both Reddit
-  // tickers (scraper + browser scrape) without restarting the service.
-  let scraperTimer: NodeJS.Timeout | null = null;
-  let redditScrapeTimer: NodeJS.Timeout | null = null;
-  if (config.redditScraperEnabled) {
-  const scraperTick = async () => {
-    try {
-      const googleClient = config.oauthClients["google"] ?? null;
-      // Credential lookup: in production, Google credentials are stored
-      // encrypted in agent_service_credentials. For now, the scraper
-      // only runs when the operator triggers /reddit/login manually.
-      // The ticker is a placeholder for when automated credential storage
-      // is implemented.
-      if (googleClient) {
-        await runScraperCycle(pool, googleClient, async () => null);
-      }
-    } catch (err) {
-      console.error("reddit scraper ticker error:", err);
-    }
-  };
-  scraperTimer = setInterval(scraperTick, 6 * 60 * 60 * 1000);
-  scraperTimer.unref();
-
   // Reddit browser scrape ticker — every 6 hours, re-scrape the growth
   // loop's discovery queries through the logged-in browser and refresh
   // reddit_scrape_results. Query sources, in order:
@@ -388,6 +348,10 @@ async function main(): Promise<void> {
   //   2. distinct queries already stored per workspace (keeps results fresh)
   // Only workspaces with stored reddit-browser credentials are touched, and
   // every failure is contained: one bad workspace never blocks another.
+  // Kill switch: set REDDIT_SCRAPER_ENABLED=false to disable the ticker
+  // without restarting the service.
+  let redditScrapeTimer: NodeJS.Timeout | null = null;
+  if (config.redditScraperEnabled) {
   const redditScrapeTick = async () => {
     try {
       const envQueries = (process.env.REDDIT_SCRAPER_QUERIES ?? "")
@@ -447,9 +411,7 @@ async function main(): Promise<void> {
     if (schedulerTimer) clearInterval(schedulerTimer);
     if (taskPollerTimer) clearInterval(taskPollerTimer);
     if (discoveryTimer) clearInterval(discoveryTimer);
-    if (scraperTimer) clearInterval(scraperTimer);
     if (redditScrapeTimer) clearInterval(redditScrapeTimer);
-    oauthCleanup.cleanup();
     await app.close();
 
     if (inFlightTasks.size > 0) {

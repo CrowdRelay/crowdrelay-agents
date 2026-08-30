@@ -99,7 +99,7 @@ export interface PremiumModelDef {
 }
 
 export const PREMIUM_MODELS: PremiumModelDef[] = [
-  // Anthropic — OAuth2 or BYOK
+  // Anthropic — BYOK
   {
     id: "claude-opus-4-1-20250805",
     provider: "anthropic",
@@ -118,7 +118,7 @@ export const PREMIUM_MODELS: PremiumModelDef[] = [
     priceInputPerMTok: 3,
     priceOutputPerMTok: 15,
   },
-  // OpenAI — OAuth2 or BYOK
+  // OpenAI — BYOK
   {
     id: "gpt-4o",
     provider: "openai",
@@ -137,7 +137,7 @@ export const PREMIUM_MODELS: PremiumModelDef[] = [
     priceInputPerMTok: 15,
     priceOutputPerMTok: 60,
   },
-  // Google — OAuth2 or BYOK
+  // Google — BYOK
   {
     id: "gemini-1.5-pro",
     provider: "google",
@@ -199,7 +199,7 @@ export const PREMIUM_MODELS: PremiumModelDef[] = [
     priceOutputPerMTok: 0,
     agentic: true,
   },
-  // OpenRouter — OAuth2 or BYOK, aggregates many models
+  // OpenRouter — BYOK, aggregates many models
   {
     id: "anthropic/claude-sonnet-4",
     provider: "openrouter",
@@ -218,7 +218,7 @@ export const PREMIUM_MODELS: PremiumModelDef[] = [
     priceInputPerMTok: 2.75,
     priceOutputPerMTok: 11,
   },
-  // GitHub Copilot — OAuth2 (device code), subscriber benefit
+  // GitHub Copilot — BYOK, subscriber benefit
   {
     id: "gpt-4o",
     provider: "github-copilot",
