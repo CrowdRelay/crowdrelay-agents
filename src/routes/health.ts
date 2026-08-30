@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { MODELS } from "../agent/models.js";
+import { PROVIDERS } from "../providers/registry.js";
 import type { DbPool } from "../store/db.js";
 
 let version = "unknown";
@@ -37,16 +37,19 @@ export function registerHealthRoutes(
        ORDER BY provider, model_id`,
     );
 
-    // Merge with model catalog to show full picture
-    const catalogModels = MODELS.map((m) => ({
-      id: m.id,
-      provider: m.provider,
-      name: m.name,
-      free_limit: m.freeLimit,
-      context_window: m.contextWindow,
-      best_for: m.bestFor,
-      requires_key: m.requiresKey,
-    }));
+    // Merge with the full provider catalog (free + premium) so the frontend
+    // sees every model the system knows about.
+    const catalogModels = PROVIDERS.flatMap((p) =>
+      p.models.map((m) => ({
+        id: m.id,
+        provider: p.id,
+        name: m.name,
+        context_window: m.contextWindow,
+        best_for: m.bestFor,
+        requires_key: !p.freeTier,
+        paid: m.paid,
+      })),
+    );
 
     return reply.send({
       models: catalogModels,

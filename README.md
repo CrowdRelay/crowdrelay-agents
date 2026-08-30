@@ -25,7 +25,7 @@ LLMs are useful for drafting creative work, but they're useless without context.
 
 ## Providers
 
-Six LLM providers: OpenCode Zen (free, no key), OpenAI, Anthropic (Claude), Google Gemini, Groq, OpenRouter. Each workspace connects its own providers. API keys are encrypted at rest and never sent back to the frontend. Google OAuth is supported for providers that need it.
+Six LLM providers: OpenCode Zen (free, no key), OpenAI, Anthropic (Claude), Google Gemini, Groq, OpenRouter. Each workspace connects its own providers. API keys are encrypted at rest and never sent back to the frontend.
 
 ## Ecosystem
 

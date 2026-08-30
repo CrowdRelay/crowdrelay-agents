@@ -6,7 +6,7 @@ export interface Credential {
   workspace_id: string;
   provider: string;
   label: string;
-  credential_type: "api_key" | "oauth_refresh_token";
+  credential_type: "api_key";
   status: "active" | "revoked" | "invalid";
   last_validated_at: string | null;
   last_validation_error: string | null;
@@ -23,7 +23,7 @@ export async function storeCredential(
   workspaceId: string,
   provider: string,
   label: string,
-  credentialType: "api_key" | "oauth_refresh_token",
+  credentialType: "api_key",
   plaintextValue: string,
   encryptionKey: string,
   providerAccount?: string,
@@ -47,11 +47,11 @@ export async function storeCredential(
 export async function listCredentials(
   pool: DbPool,
   workspaceId: string,
-): Promise<Array<Credential & { credential_flavor: string | null; provider_account: string | null; expires_at: string | null }>> {
+): Promise<Array<Credential & { provider_account: string | null }>> {
   const { rows } = await pool.query(
     `SELECT id, workspace_id, provider, label, credential_type, status,
             last_validated_at, last_validation_error, created_at,
-            credential_flavor, provider_account, expires_at
+            provider_account
      FROM agent_service_credentials
      WHERE workspace_id = $1
      ORDER BY created_at DESC`,
@@ -59,9 +59,7 @@ export async function listCredentials(
   );
   return rows.map((row) => ({
     ...rowToCredential(row),
-    credential_flavor: (row.credential_flavor as string | null) ?? null,
     provider_account: (row.provider_account as string | null) ?? null,
-    expires_at: row.expires_at ? new Date(row.expires_at as string).toISOString() : null,
   }));
 }
 

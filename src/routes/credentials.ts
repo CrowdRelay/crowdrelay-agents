@@ -72,7 +72,7 @@ export function registerCredentialRoutes(
       return reply.code(400).send({ error: `${provider.name} does not require an API key` });
     }
     if (!provider.validateApiKey) {
-      return reply.code(400).send({ error: `${provider.name} does not support API keys — use the connect flow` });
+      return reply.code(400).send({ error: `${provider.name} does not support API key validation` });
     }
 
     // Cognition (Devin) requires an org ID in addition to the API key.

@@ -95,29 +95,7 @@ export async function runMigrations(pool: DbPool): Promise<void> {
     )`,
     `CREATE INDEX IF NOT EXISTS agent_service_credentials_workspace_idx
       ON agent_service_credentials (workspace_id)`,
-    // OAuth tokens. encrypted_value stays the canonical field for api_key and
-    // api_key_returned flavors; refresh-token flows also fill the columns
-    // below. credential_flavor drives how the runner resolves a usable token.
-    `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS encrypted_access_token TEXT`,
-    `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS encrypted_refresh_token TEXT`,
-    `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
-    `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS scope TEXT`,
     `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS provider_account TEXT`,
-    `ALTER TABLE agent_service_credentials ADD COLUMN IF NOT EXISTS credential_flavor TEXT`,
-    // Durable OAuth state. Replaces the earlier in-memory CSRF Map so the
-    // flow survives restarts and works with multiple instances.
-    `CREATE TABLE IF NOT EXISTS agent_service_oauth_states (
-      state         TEXT PRIMARY KEY,
-      workspace_id  UUID NOT NULL,
-      provider      TEXT NOT NULL,
-      code_verifier TEXT,
-      redirect_uri  TEXT,
-      device_code   TEXT,
-      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-      expires_at    TIMESTAMPTZ NOT NULL
-    )`,
-    `CREATE INDEX IF NOT EXISTS agent_service_oauth_states_expiry_idx
-      ON agent_service_oauth_states (expires_at)`,
     // Per-workspace, per-model usage ledger. Powers budget enforcement and
     // the DB-backed hourly request cap (replaces the in-memory timestamp map).
     `CREATE TABLE IF NOT EXISTS agent_service_usage (

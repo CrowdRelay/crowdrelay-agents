@@ -36,8 +36,8 @@ Tables: `agent_service_*` (own migrations) + `agent_outcomes` (CrowdRelay migrat
 src/agent/      runner.ts (main loop), context.ts, structured.ts, verify.ts, outcomes.ts, workflow.ts
 src/templates/  catalog.ts (AgentTemplate interface), 9 templates (workers)
 src/mcp/        tools.ts (16 read-only Postgres tools)
-src/providers/  registry.ts (LLM providers), oauth/ (flows, refresh)
-src/routes/     tasks, templates, schedules, credentials, oauth, health, chat, workflows
+src/providers/  registry.ts (LLM providers)
+src/routes/     tasks, templates, schedules, credentials, health, chat, workflows
 src/store/      db.ts, tasks.ts, credentials.ts, workflows.ts
 src/config.ts   env config
 src/server.ts   main + scheduler ticker

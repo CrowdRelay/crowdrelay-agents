@@ -285,6 +285,9 @@ export const PROVIDERS: ProviderDef[] = [
       { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
       { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
       { id: "z-ai/glm-5.2:free", name: "GLM-5.2 Free via OpenRouter", contextWindow: 200_000, bestFor: "Free tier of GLM-5.2 — same family as Devin's GLM-5.2 High", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "nvidia/nemotron-3-ultra:free", name: "Nemotron 3 Ultra Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Most-used free model on OpenRouter, 1M context, strong reasoning", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "minimax/m3:free", name: "MiniMax M3 Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Strong general-purpose model, 1M context", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "nvidia/nemotron-3-super:free", name: "Nemotron 3 Super Free via OpenRouter", contextWindow: 262_000, bestFor: "Fast reasoning, good for structured output", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
     ],
   },
   {
@@ -293,7 +296,7 @@ export const PROVIDERS: ProviderDef[] = [
     description: "Grok 4.6, 4.5, and 4.3. Paste your API key from console.x.ai. OpenAI-compatible endpoint.",
     authMethod: "api_key",
     protocol: "openai",
-    tier: "free",
+    tier: "premium",
     validateApiKey: validateXAI,
     models: [
       { id: "grok-4.6", name: "Grok 4.6 (500K)", contextWindow: 500_000, bestFor: "Most intelligent Grok, code and chat", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
@@ -323,7 +326,7 @@ export const PROVIDERS: ProviderDef[] = [
       "GLM-5.3, GLM-5.1 — powerful Chinese AI models with strong agentic and tool-use capabilities. OpenAI-compatible API. Paste your API key from open.bigmodel.cn (China) or z.ai (international).",
     authMethod: "api_key",
     protocol: "openai",
-    tier: "free",
+    tier: "premium",
     validateApiKey: validateZhipu,
     models: [
       { id: "glm-5.3", name: "GLM-5.3 (128K)", contextWindow: 128_000, bestFor: "Latest flagship, strong agentic tasks and tool use", paid: true, pricing: { inputPerMTokUsd: 0.5, outputPerMTokUsd: 1.5 } },
@@ -337,7 +340,7 @@ export const PROVIDERS: ProviderDef[] = [
     description:
       "Devin agentic sessions powered by GLM-5.2 High. Unlike other providers, Devin runs autonomously — it can use shell, files, web search, and spawn sub-agents to complete complex multi-step tasks. Paste your Devin API key (cog_...) and organization ID (org-...) from settings.devin.ai.",
     authMethod: "api_key",
-    tier: "free",
+    tier: "premium",
     // Devin uses a session API, not chat completions — but we set "openai" here
     // so the credential route accepts it. The runner dispatches via callDevinSession()
     // instead of callOpenAICompatible() based on the model's `agentic` flag.

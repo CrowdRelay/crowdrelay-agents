@@ -58,8 +58,9 @@ interface AttemptRecord {
  * 2. Build the full prompt from template + data + operator input
  * 3. Resolve the model + credential chain (API key lookup)
  * 4. Call the LLM (fallback chain, JSON mode when the template wants structure)
- * 5. For structured outcomes: verify the response with a free-tier model
- *    before accepting it. Rejected responses fall through to the next model.
+ * 5. For structured outcomes: verify the response with a tier-matched model
+ *    (free reviews free, premium reviews premium) before accepting it.
+ *    Rejected responses fall through to the next model.
  * 6. Record usage/cost, store the result, parse + emit structured outcomes
  */
 export async function runTask(config: RunConfig): Promise<void> {
@@ -135,8 +136,12 @@ export async function runTask(config: RunConfig): Promise<void> {
     const attempts: AttemptRecord[] = [];
     let verificationResult: VerifyResult | null = null;
 
-    // Resolve a free-tier verifier model — the gate must not add cost.
-    const verifierEntry = await resolveVerifier(config);
+    // Resolve a verifier model matched to the generator's tier.
+    // Free AI reviews free AI; premium AI reviews premium AI.
+    // The verifier is always from a different provider than the primary
+    // generator model, so a model never reviews itself.
+    const primaryProviderId = modelChain[0]?.provider.id;
+    const verifierEntry = await resolveVerifier(config, primaryProviderId);
 
     // Total budget for the entire fallback chain. Premium agentic sessions
     // (Devin) get a longer deadline since they run autonomously.
@@ -340,7 +345,7 @@ function findProviderForModel(modelId: string): { provider: ProviderDef; model: 
 
 /**
  * Resolves the chain of (provider, model, key) tuples to try:
- * 1. The requested model with its credential (OAuth credentials refresh here)
+ * 1. The requested model with its credential (credentials are resolved here)
  * 2. Other recommended models from the template among connected providers
  * 3. Free-tier models (Zen, Groq free, Gemini free)
  */
@@ -350,7 +355,7 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
   const connectedProviders = await getConnectedProviders(pool, workspaceId);
   // Per-task credential cache: the same provider's key is queried many times
   // during chain resolution. Without this, each candidate model triggers a
-  // separate DB/OAuth call — an N+1 on the credentials table.
+  // separate DB call — an N+1 on the credentials table.
   const credentialCache = new Map<string, string | null | undefined>();
 
   const requested = findProviderForModel(modelId);
@@ -543,21 +548,49 @@ async function callAgenticSession(
 }
 
 /**
- * Resolves a free-tier model for the verification pass. The verifier must
- * not add cost, so only free models are considered. Preference order:
- * 1. OpenCode Zen (always available, no key needed)
- * 2. Groq free models (fast, good for short verification prompts)
- * 3. Google Gemini free tier
+ * Resolves a verifier model for the verification pass.
  *
- * Returns null when no free model is available — the runner then skips
+ * Tier-matched cross-review: free AI reviews free AI, premium AI reviews
+ * premium AI. The verifier is always from a different provider than the
+ * primary generator model, so a model never reviews itself.
+ *
+ * - Free tier: uses free models only (no cost). Preference: Zen, then Groq,
+ *   then Gemini, then any other free model.
+ * - Premium tier: uses paid models from connected providers (different
+ *   provider than the generator). Falls back to free models if no premium
+ *   verifier from a different provider is available.
+ *
+ * Returns null when no verifier is available — the runner then skips
  * verification (fail-open) rather than blocking the pipeline.
  */
-async function resolveVerifier(config: RunConfig): Promise<ChainEntry | null> {
+async function resolveVerifier(
+  config: RunConfig,
+  excludeProviderId?: string,
+): Promise<ChainEntry | null> {
   const connectedProviders = await getConnectedProviders(config.pool, config.workspaceId);
+  const isPremium = config.tier === "premium";
+
+  if (isPremium) {
+    // Try premium models from connected providers, excluding the generator's
+    // provider so a model never reviews itself.
+    for (const provider of PROVIDERS) {
+      if (provider.id === excludeProviderId) continue;
+      if (!connectedProviders.includes(provider.id)) continue;
+      for (const model of provider.models) {
+        if (!model.paid) continue;
+        const key = await resolveApiKey(provider, config, connectedProviders);
+        if (key !== undefined) return { provider, model, apiKey: key };
+      }
+    }
+    // Fall through to free verifier if no premium verifier from a different
+    // provider is available — verification with a free model is better than
+    // no verification.
+  }
 
   // Prefer Zen for verification — it's always available and free.
   for (const provider of PROVIDERS) {
     if (provider.id === "opencode-zen") {
+      if (provider.id === excludeProviderId) continue;
       const key = await resolveApiKey(provider, config, connectedProviders);
       if (key !== undefined) {
         // Use the first (most capable) free model.
@@ -570,6 +603,7 @@ async function resolveVerifier(config: RunConfig): Promise<ChainEntry | null> {
   // Fall back to any other free-tier provider.
   for (const provider of PROVIDERS) {
     if (provider.id === "opencode-zen") continue;
+    if (provider.id === excludeProviderId) continue;
     if (!provider.freeTier && !connectedProviders.includes(provider.id)) continue;
     for (const model of provider.models) {
       if (model.paid) continue;
@@ -589,7 +623,7 @@ async function resolveApiKey(
 ): Promise<string | null | undefined> {
   // Check cache first — the same provider's credential is queried many times
   // during chain resolution (requested, recommended, free-tier, discovered).
-  // Without this, each candidate model triggers a separate DB/OAuth call.
+  // Without this, each candidate model triggers a separate DB call.
   if (credentialCache) {
     const cached = credentialCache.get(provider.id);
     if (cached !== undefined) return cached;
