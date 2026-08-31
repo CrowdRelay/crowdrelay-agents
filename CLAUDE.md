@@ -33,14 +33,17 @@ Tables: `agent_service_*` (own migrations) + `agent_outcomes` (CrowdRelay migrat
 
 ## Layout
 ```
-src/agent/      runner.ts (main loop), context.ts, structured.ts, verify.ts, outcomes.ts, workflow.ts
-src/templates/  catalog.ts (AgentTemplate interface), 9 templates (workers)
-src/mcp/        tools.ts (16 read-only Postgres tools)
+src/agent/      runner.ts (main loop), context.ts, structured.ts, verify.ts,
+                outcomes.ts, usage.ts (ledger + budget), discovery.ts,
+                reddit-browser.ts (browser-as-API), trace.ts
+src/templates/  catalog.ts (AgentTemplate interface), 8 templates (workers)
+src/mcp/        tools.ts (14 workspace-scoped Postgres tools)
 src/providers/  registry.ts (LLM providers)
-src/routes/     tasks, templates, schedules, credentials, health, chat, workflows
+src/routes/     tasks, templates, schedules, credentials, health, chat,
+                workflows, brain, growth, premium, usage, reddit, rate-limit
 src/store/      db.ts, tasks.ts, credentials.ts, workflows.ts
 src/config.ts   env config
-src/server.ts   main + scheduler ticker
+src/server.ts   main + scheduler/task-poller/discovery/reddit tickers
 ```
 
 ## Gates
@@ -55,5 +58,10 @@ npm run build        # tsc → dist/
 - Runner: buildContext → model fallback chain → verification gate → emit outcomes.
 - All writes go through `agent_outcomes`; the Rust worker owns autopilot mapping.
 - Free models (Zen, Gemini Flash, Groq) are the default for workers.
+- Budget is gated BEFORE a paid call (`hasRemainingBudget`); `recordUsage`
+  always writes what was actually spent, including the verifier's tokens.
+- Untrusted ids from callers (`X-Trace-Id`, `metadata.trace_id`) go through
+  `normalizeTraceId` — `agent_outcomes.trace_id` is a `uuid` column and a bad
+  value would roll back the transaction that carries the result row.
 - The `growth-strategist` template is NOT the brain — it's a worker that feeds
   intelligence via `campaign_insight` outcomes. The brain is the Rust autopilot.

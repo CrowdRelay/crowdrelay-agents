@@ -12,7 +12,10 @@
  * task result with the rejection reason so the operator can see why.
  *
  * Design notes:
- *  - The verifier is always a free-tier model — the gate must not add cost.
+ *  - The verifier is tier-matched: a basic run is reviewed by a free model,
+ *    a premium run by the cheapest paid model of a *different* connected
+ *    provider. Either way the runner records the verifier's tokens, so the
+ *    gate's cost is visible in the ledger rather than hidden.
  *  - The verifier sees the SAME data sections the generator saw, so it can
  *    catch "invented a venue that doesn't appear in the events list."
  *  - The verdict is a tiny JSON object: { "passed": true/false, "issues": [...] }
@@ -24,6 +27,7 @@
 import { callOpenAICompatible, type LlmResponse } from "./opencode.js";
 import { callAnthropic } from "./anthropic.js";
 import { PROVIDER_ENDPOINTS } from "./endpoints.js";
+import { parseVerdict } from "./json-extract.js";
 import type { ProviderDef, ProviderModel } from "../providers/registry.js";
 import type { OutcomeKind } from "./structured.js";
 
@@ -34,6 +38,9 @@ export interface VerifyResult {
   verifierModel: string;
   /** Verifier call failed — outcome passed by fail-open policy. */
   verifierError?: string;
+  /** Tokens the verification call consumed, so the runner can bill them. */
+  tokensIn?: number | null;
+  tokensOut?: number | null;
 }
 
 interface VerifierEntry {
@@ -43,7 +50,8 @@ interface VerifierEntry {
 }
 
 /**
- * Runs the verification gate. Always uses a free-tier model.
+ * Runs the verification gate with the model the runner resolved for this
+ * generator (see `resolveVerifier`).
  *
  * Returns { passed: true } when the outcome is clean or when the verifier
  * itself errors (fail-open). Returns { passed: false, issues } only when the
@@ -75,12 +83,15 @@ export async function verifyOutcome(params: {
 
   const parsed = parseVerdict(response.content);
   if (!parsed) {
-    // Verifier returned unparseable output — fail open.
+    // Verifier returned unparseable output — fail open. The call still cost
+    // tokens, so they are reported even though the verdict was unusable.
     return {
       passed: true,
       issues: [],
       verifierModel: verifier.model.id,
       verifierError: "verifier returned unparseable output",
+      tokensIn: response.tokensIn,
+      tokensOut: response.tokensOut,
     };
   }
 
@@ -88,6 +99,8 @@ export async function verifyOutcome(params: {
     passed: parsed.passed,
     issues: parsed.issues,
     verifierModel: verifier.model.id,
+    tokensIn: response.tokensIn,
+    tokensOut: response.tokensOut,
   };
 }
 
@@ -140,58 +153,6 @@ function buildVerifierUserPrompt(originalPrompt: string, dataSections: string, m
     "",
     "Verify the AI response against the real data. Respond with the verdict JSON.",
   ].join("\n");
-}
-
-interface VerifierVerdict {
-  passed: boolean;
-  issues: string[];
-}
-
-function parseVerdict(raw: string): VerifierVerdict | null {
-  // Reuse the same balanced-JSON extraction logic as the main parser.
-  // Inline here to keep the verifier self-contained.
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidates = [fenced?.[1], raw];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const start = candidate.indexOf("{");
-    if (start === -1) continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < candidate.length; i++) {
-      const ch = candidate[i];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') inString = !inString;
-      if (inString) continue;
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          try {
-            const obj = JSON.parse(candidate.slice(start, i + 1)) as Record<string, unknown>;
-            if (typeof obj.passed === "boolean") {
-              const issues = Array.isArray(obj.issues)
-                ? obj.issues.filter((s): s is string => typeof s === "string").slice(0, 10)
-                : [];
-              return { passed: obj.passed, issues };
-            }
-            return null;
-          } catch {
-            break;
-          }
-        }
-      }
-    }
-  }
-  return null;
 }
 
 async function callVerifier(

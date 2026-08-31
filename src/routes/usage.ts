@@ -105,10 +105,15 @@ export function registerUsageRoutes(
       ),
       // 4. Daily spend trend (last 30 days)
       opts.pool.query(
+        // free_cost_micro_usd is 0 by construction (it sums rows whose cost
+        // IS 0) and is kept only so existing clients don't break. The useful
+        // free-vs-paid split is the request counts.
         `SELECT day::text AS day,
                 COALESCE(SUM(cost_micro_usd) FILTER (WHERE cost_micro_usd > 0), 0) AS paid_cost,
-                COALESCE(SUM(cost_micro_usd) FILTER (WHERE cost_micro_usd = 0), 0) AS free_cost,
-                COUNT(*) AS requests
+                0 AS free_cost,
+                COALESCE(SUM(requests) FILTER (WHERE cost_micro_usd > 0), 0) AS paid_requests,
+                COALESCE(SUM(requests) FILTER (WHERE cost_micro_usd = 0), 0) AS free_requests,
+                COALESCE(SUM(requests), 0) AS requests
          FROM agent_service_usage
          WHERE workspace_id = $1
            AND day >= CURRENT_DATE - INTERVAL '29 days'
@@ -180,6 +185,11 @@ export function registerUsageRoutes(
       day: r.day,
       paid_cost_micro_usd: Math.min(Number(r.paid_cost), Number.MAX_SAFE_INTEGER),
       free_cost_micro_usd: Math.min(Number(r.free_cost), Number.MAX_SAFE_INTEGER),
+      paid_requests: Math.min(Number(r.paid_requests), Number.MAX_SAFE_INTEGER),
+      free_requests: Math.min(Number(r.free_requests), Number.MAX_SAFE_INTEGER),
+      // Actual calls made, not ledger rows: the ledger holds one row per
+      // (day, provider, model) with a running `requests` counter, so COUNT(*)
+      // here reported "3 requests" for a day with three models and 300 calls.
       requests: Math.min(Number(r.requests), Number.MAX_SAFE_INTEGER),
     }));
 

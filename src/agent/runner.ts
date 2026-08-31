@@ -9,7 +9,7 @@ import { callDevinSession } from "./cognition.js";
 import { buildContext, renderContextSections } from "./context.js";
 import { parseOutcome, outputContractText, type OutcomeKind } from "./structured.js";
 import { emitOutcomes } from "./outcomes.js";
-import { recordUsage } from "./usage.js";
+import { recordUsage, hasRemainingBudget } from "./usage.js";
 import { verifyOutcome, type VerifyResult } from "./verify.js";
 import { availablePremiumModels } from "./models.js";
 import { getDiscoveredFreeModels, type DiscoveredModel } from "./discovery.js";
@@ -32,6 +32,8 @@ export interface RunConfig {
   outcomesEnabled: boolean;
   /** Intelligent token optimization: "basic" uses free models, "premium" routes to connected paid providers. */
   tier: "basic" | "premium";
+  /** Monthly spend ceiling used when the workspace has no explicit budget row. */
+  defaultMonthlyBudgetMicroUsd: number;
   /** Trace ID from the autopilot trace spine, for causal correlation in agent_outcomes. */
   traceId?: string | null;
 }
@@ -134,16 +136,22 @@ export async function runTask(config: RunConfig): Promise<void> {
     let response: LlmResponse | null = null;
     let lastError: string | null = null;
     let modelUsed = "";
+    let providerUsed: string | null = null;
     let costMicroUsd = 0;
     const attempts: AttemptRecord[] = [];
     let verificationResult: VerifyResult | null = null;
 
-    // Resolve a verifier model matched to the generator's tier.
-    // Free AI reviews free AI; premium AI reviews premium AI.
-    // The verifier is always from a different provider than the primary
-    // generator model, so a model never reviews itself.
-    const primaryProviderId = modelChain[0]?.provider.id;
-    const verifierEntry = await resolveVerifier(config, primaryProviderId);
+    // Verifier models are resolved lazily, per generator provider, and cached:
+    // the verifier must never come from the same provider as the model whose
+    // output it is checking, and the accepted model may be any entry in the
+    // chain — not just the first one.
+    const verifierCache = new Map<string, ChainEntry | null>();
+    const verifierFor = async (generatorProviderId: string): Promise<ChainEntry | null> => {
+      if (!verifierCache.has(generatorProviderId)) {
+        verifierCache.set(generatorProviderId, await resolveVerifier(config, generatorProviderId));
+      }
+      return verifierCache.get(generatorProviderId) ?? null;
+    };
 
     // Total budget for the entire fallback chain. Premium agentic sessions
     // (Devin) get a longer deadline since they run autonomously.
@@ -156,6 +164,31 @@ export async function runTask(config: RunConfig): Promise<void> {
       if (remaining <= 5_000) {
         console.error("Model chain deadline exceeded, skipping remaining fallbacks");
         break;
+      }
+      // Each attempt gets its own verdict — a rejection from an earlier model
+      // must not be reported as this model's verification result.
+      verificationResult = null;
+
+      // Budget gate before the money is spent. recordUsage runs after the
+      // call and always writes what was actually consumed, so an exhausted
+      // budget has to be caught here or not at all.
+      if (entry.model.paid) {
+        const withinBudget = await hasRemainingBudget(
+          pool,
+          workspaceId,
+          config.defaultMonthlyBudgetMicroUsd,
+        );
+        if (!withinBudget) {
+          lastError = "monthly budget exhausted";
+          attempts.push({
+            provider: entry.provider.id,
+            model: entry.model.id,
+            ok: false,
+            cost_micro_usd: 0,
+            error: "skipped: monthly budget exhausted",
+          });
+          continue;
+        }
       }
       try {
         // Agentic models (Devin) use a session API instead of chat completions.
@@ -177,6 +210,9 @@ export async function runTask(config: RunConfig): Promise<void> {
         // record the issues and try the next model in the chain — a
         // verified answer from a fallback beats an unverified one from
         // the primary.
+        const verifierEntry = outputKind && config.outcomesEnabled
+          ? await verifierFor(entry.provider.id)
+          : null;
         if (outputKind && config.outcomesEnabled && verifierEntry) {
           const verifyRemaining = CHAIN_DEADLINE_MS - (Date.now() - chainStart);
           if (verifyRemaining <= 5_000) {
@@ -190,6 +226,15 @@ export async function runTask(config: RunConfig): Promise<void> {
               dataSections: renderContextSections(bundle),
               modelOutput: candidate.content,
             });
+            // The verification pass burns tokens too. A premium verifier is a
+            // paid model — leaving it out of the ledger under-reports spend
+            // and hides it from the budget gate on the next run.
+            costMicroUsd += await recordVerifierUsage(
+              pool,
+              workspaceId,
+              verifierEntry,
+              verificationResult,
+            );
             if (!verificationResult.passed) {
               console.error(
                 `Model ${entry.model.id} output rejected by verifier:`,
@@ -210,6 +255,7 @@ export async function runTask(config: RunConfig): Promise<void> {
 
         response = candidate;
         modelUsed = entry.model.id;
+        providerUsed = entry.provider.id;
         attempts.push({
           provider: entry.provider.id,
           model: entry.model.id,
@@ -320,16 +366,14 @@ export async function runTask(config: RunConfig): Promise<void> {
       premium_fallback: usedPremiumFallback,
     });
 
-    // Record the total cost on the task row for budget tracking.
-    // Use the model that was actually accepted (modelUsed), not the first
-    // model that returned ok — a rejected response is not the final answer.
-    if (costMicroUsd > 0) {
-      const acceptedAttempt = attempts.find((a) => a.model === modelUsed);
-      await pool.query(
-        `UPDATE agent_service_tasks SET cost_micro_usd = $2, model_provider = $3 WHERE id = $1`,
-        [taskId, costMicroUsd, acceptedAttempt?.provider ?? null],
-      );
-    }
+    // Record the total cost and the provider that actually produced the
+    // accepted answer. Written unconditionally: a free run costs 0 but its
+    // provider still belongs on the row, or the model-routing analytics
+    // report every free task under a NULL provider.
+    await pool.query(
+      `UPDATE agent_service_tasks SET cost_micro_usd = $2, model_provider = $3 WHERE id = $1`,
+      [taskId, costMicroUsd, providerUsed],
+    );
 
     await updateTaskStatus(pool, taskId, "completed");
   } catch (err) {
@@ -353,7 +397,7 @@ function findProviderForModel(modelId: string): { provider: ProviderDef; model: 
  * 3. Free-tier models (Zen, Groq free, Gemini free)
  */
 async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
-  const { pool, workspaceId, modelId, encryptionKey, previousEncryptionKey } = config;
+  const { pool, workspaceId, modelId } = config;
   const chain: ChainEntry[] = [];
   const connectedProviders = await getConnectedProviders(pool, workspaceId);
   // Per-task credential cache: the same provider's key is queried many times
@@ -448,7 +492,7 @@ async function resolveModelChain(config: RunConfig): Promise<ChainEntry[]> {
  * caller falls back to the basic chain in that case.
  */
 async function resolvePremiumChain(config: RunConfig): Promise<ChainEntry[]> {
-  const { pool, workspaceId, encryptionKey, previousEncryptionKey } = config;
+  const { pool, workspaceId } = config;
   const connectedProviders = await getConnectedProviders(pool, workspaceId);
   const premiumModels = availablePremiumModels(connectedProviders);
 
@@ -575,15 +619,23 @@ async function resolveVerifier(
 
   if (isPremium) {
     // Try premium models from connected providers, excluding the generator's
-    // provider so a model never reviews itself.
+    // provider so a model never reviews itself. Within a provider, take the
+    // cheapest paid model — verification is a short structured check, not a
+    // reason to pay flagship rates.
     for (const provider of PROVIDERS) {
       if (provider.id === excludeProviderId) continue;
       if (!connectedProviders.includes(provider.id)) continue;
-      for (const model of provider.models) {
-        if (!model.paid) continue;
-        const key = await resolveApiKey(provider, config, connectedProviders);
-        if (key !== undefined) return { provider, model, apiKey: key };
-      }
+      if (!PROVIDER_ENDPOINTS[provider.id] && provider.protocol !== "anthropic") continue;
+      const cheapest = provider.models
+        .filter((m) => m.paid && !(m as ProviderModel & { agentic?: boolean }).agentic)
+        .sort(
+          (a, b) =>
+            (a.pricing?.inputPerMTokUsd ?? 0) + (a.pricing?.outputPerMTokUsd ?? 0) -
+            ((b.pricing?.inputPerMTokUsd ?? 0) + (b.pricing?.outputPerMTokUsd ?? 0)),
+        )[0];
+      if (!cheapest) continue;
+      const key = await resolveApiKey(provider, config, connectedProviders);
+      if (key !== undefined) return { provider, model: cheapest, apiKey: key };
     }
     // Fall through to free verifier if no premium verifier from a different
     // provider is available — verification with a free model is better than
@@ -608,6 +660,7 @@ async function resolveVerifier(
     if (provider.id === "opencode-zen") continue;
     if (provider.id === excludeProviderId) continue;
     if (!provider.freeTier && !connectedProviders.includes(provider.id)) continue;
+    if (!PROVIDER_ENDPOINTS[provider.id] && provider.protocol !== "anthropic") continue;
     for (const model of provider.models) {
       if (model.paid) continue;
       const key = await resolveApiKey(provider, config, connectedProviders);
@@ -618,6 +671,32 @@ async function resolveVerifier(
   return null;
 }
 
+/**
+ * Records the verifier call in the usage ledger. Verification is a real
+ * provider call — on the premium tier it is a paid model — so its tokens
+ * belong in the ledger alongside the generator's. A verifier that never
+ * reached the provider reports no tokens and is skipped; one that answered
+ * unparseably still burned them and is billed.
+ */
+async function recordVerifierUsage(
+  pool: DbPool,
+  workspaceId: string,
+  verifier: ChainEntry,
+  result: VerifyResult,
+): Promise<number> {
+  if (result.tokensIn == null && result.tokensOut == null) return 0;
+  try {
+    return await recordUsage(pool, workspaceId, verifier.provider.id, verifier.model, {
+      tokensIn: result.tokensIn ?? null,
+      tokensOut: result.tokensOut ?? null,
+    });
+  } catch (err) {
+    // Ledger write failures must never sink an otherwise good run.
+    console.error("failed to record verifier usage:", err);
+    return 0;
+  }
+}
+
 async function resolveApiKey(
   provider: ProviderDef,
   config: RunConfig,
@@ -626,10 +705,12 @@ async function resolveApiKey(
 ): Promise<string | null | undefined> {
   // Check cache first — the same provider's credential is queried many times
   // during chain resolution (requested, recommended, free-tier, discovered).
-  // Without this, each candidate model triggers a separate DB call.
-  if (credentialCache) {
-    const cached = credentialCache.get(provider.id);
-    if (cached !== undefined) return cached;
+  // Without this, each candidate model triggers a separate DB call. `has` is
+  // the membership test, not `!== undefined`: `undefined` ("no key for this
+  // provider") is a cached value too, and it is the one that would otherwise
+  // re-query on every single candidate.
+  if (credentialCache?.has(provider.id)) {
+    return credentialCache.get(provider.id);
   }
 
   // Free tier — no key needed
@@ -640,15 +721,26 @@ async function resolveApiKey(
   }
 
   if (connectedProviders.includes(provider.id)) {
-    // API key providers: decrypt the stored key directly.
-    const cred = await getCredential(
-      config.pool,
-      config.workspaceId,
-      provider.id,
-      config.encryptionKey,
-      config.previousEncryptionKey,
-    );
-    const result = cred?.decryptedValue ?? undefined;
+    // API key providers: decrypt the stored key directly. A credential sealed
+    // with a key we no longer hold throws — that must skip this provider, not
+    // abort the whole task before any model has been tried.
+    let result: string | undefined;
+    try {
+      const cred = await getCredential(
+        config.pool,
+        config.workspaceId,
+        provider.id,
+        config.encryptionKey,
+        config.previousEncryptionKey,
+      );
+      result = cred?.decryptedValue ?? undefined;
+    } catch (err) {
+      console.error(
+        `could not decrypt the ${provider.id} credential for workspace ${config.workspaceId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      result = undefined;
+    }
     credentialCache?.set(provider.id, result);
     return result;
   }

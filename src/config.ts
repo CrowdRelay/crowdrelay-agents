@@ -49,8 +49,24 @@ export function loadConfig(): Config {
     );
   }
 
+  const bind = env.AGENT_SERVICE_BIND ?? "0.0.0.0:8095";
+  const bindPort = Number(bind.slice(bind.lastIndexOf(":") + 1));
+  if (
+    !bind.includes(":") ||
+    !Number.isInteger(bindPort) ||
+    bindPort < 1 ||
+    bindPort > 65535
+  ) {
+    // Without this, a typo becomes `listen({ port: NaN })`, which binds a
+    // random free port and leaves the service unreachable at its advertised
+    // address with no error anywhere.
+    throw new Error(
+      `AGENT_SERVICE_BIND must be host:port with a port in 1-65535, got: ${bind}`,
+    );
+  }
+
   return {
-    bind: env.AGENT_SERVICE_BIND ?? "0.0.0.0:8095",
+    bind,
     databaseUrl: required("DATABASE_URL"),
     authKey: required("AGENT_SERVICE_AUTH_KEY"),
     encryptionKey,

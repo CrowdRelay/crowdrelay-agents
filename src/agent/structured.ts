@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { extractJson } from "./json-extract.js";
 
 /**
  * Structured outcome schemas. Every template that declares `outputSchema`
@@ -163,48 +164,6 @@ export const OutcomeEnvelope = z.object({
 });
 
 export type OutcomeEnvelopeParsed = z.infer<typeof OutcomeEnvelope>;
-
-/**
- * Extracts the first balanced JSON object from LLM text. Handles code fences
- * and prose around the JSON. Returns null when nothing parseable exists.
- */
-export function extractJson(text: string): unknown | null {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidates = [fenced?.[1], text];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const start = candidate.indexOf("{");
-    if (start === -1) continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < candidate.length; i++) {
-      const ch = candidate[i];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') inString = !inString;
-      if (inString) continue;
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          try {
-            return JSON.parse(candidate.slice(start, i + 1));
-          } catch {
-            break;
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
 
 export interface StructuredParseResult {
   ok: boolean;

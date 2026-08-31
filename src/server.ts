@@ -159,8 +159,11 @@ async function main(): Promise<void> {
     previousEncryptionKey: config.previousEncryptionKey,
   });
 
-  const [host, portStr] = config.bind.split(":");
-  const port = parseInt(portStr, 10);
+  // Split on the LAST colon so an IPv6 bind address stays intact.
+  // loadConfig already validated that the port is present and in range.
+  const separator = config.bind.lastIndexOf(":");
+  const host = config.bind.slice(0, separator);
+  const port = Number(config.bind.slice(separator + 1));
   await app.listen({ host, port });
   console.log(`crowdrelay-agents listening on ${config.bind}`);
 
@@ -222,6 +225,7 @@ async function main(): Promise<void> {
             fallbackGroqKey: config.groqApiKey,
             outcomesEnabled: config.outcomesEnabled,
             tier: "basic",
+            defaultMonthlyBudgetMicroUsd: config.defaultMonthlyBudgetMicroUsd,
           }).catch((err) => {
             console.error(`scheduled task ${task.id} crashed:`, err);
           });
@@ -297,6 +301,12 @@ async function main(): Promise<void> {
             fallbackGroqKey: config.groqApiKey,
             outcomesEnabled: config.outcomesEnabled,
             tier: task.tier as "basic" | "premium",
+            defaultMonthlyBudgetMicroUsd: config.defaultMonthlyBudgetMicroUsd,
+            // Brain-dispatched tasks carry their trace id in metadata (there
+            // is no HTTP request to hang a header off). Without this the
+            // trace spine stops at the task row for exactly the tasks the
+            // autopilot dispatches.
+            traceId: typeof task.metadata?.trace_id === "string" ? task.metadata.trace_id : null,
           }).catch((err) => {
             console.error(`queued task ${task.id} crashed:`, err);
           });

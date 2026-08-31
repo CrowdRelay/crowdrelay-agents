@@ -70,6 +70,34 @@ const CHARS_PER_TOKEN = 4;
 const CONTEXT_WINDOW_FRACTION = 0.45;
 /** Below this, executing another block is pointless. */
 const MIN_BLOCK_BUDGET_CHARS = 600;
+/**
+ * Per-tool deadline. Most blocks are single Postgres queries and finish in
+ * milliseconds, but `search_reddit_communities` drives a real browser on a
+ * cache miss (page loads, render waits, politeness gaps between queries).
+ * A template with several of those could otherwise sit in context assembly
+ * for minutes before the model chain's own deadline clock even starts.
+ * A slow block is dropped, not fatal: the run continues with the data it got.
+ */
+const BLOCK_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 export function contextBudgetChars(contextWindow: number): number {
   return Math.floor((contextWindow / CHARS_PER_TOKEN) * CONTEXT_WINDOW_FRACTION);
@@ -85,6 +113,12 @@ export function renderBlock(
   maxChars: number,
   maxRows: number,
 ): { rendered: string; truncated: boolean; droppedRows: number } {
+  // JSON.stringify(undefined) is undefined, not a string — a tool returning
+  // nothing would blow up on .length below. Render it as JSON null so the
+  // block is still valid JSON and the section reads as "no data".
+  if (value === undefined) {
+    return { rendered: "null", truncated: false, droppedRows: 0 };
+  }
   if (JSON.stringify(value).length <= maxChars) {
     return { rendered: JSON.stringify(value), truncated: false, droppedRows: 0 };
   }
@@ -220,7 +254,11 @@ export async function buildContext(params: {
     const dataKey = count === 1 ? item.tool : `${item.tool}_${count}`;
 
     try {
-      const value = await tool.execute(pool, workspaceId, item.params ?? {});
+      const value = await withTimeout(
+        tool.execute(pool, workspaceId, item.params ?? {}),
+        BLOCK_TIMEOUT_MS,
+        item.tool,
+      );
       const blockBudget = Math.min(Math.floor(budget * plan.share), remaining);
       const { rendered, truncated, droppedRows } = renderBlock(value, blockBudget, plan.maxRows);
       remaining -= rendered.length;

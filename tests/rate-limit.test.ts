@@ -1,141 +1,144 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-
-// ---------------------------------------------------------------------------
-// Rate limit race condition — contract test
-//
-// The fix changed checkRateLimit to increment runningTaskCount BEFORE any
-// await (inside the function itself), not after createTask resolves. This
-// test verifies the contract: calling checkRateLimit N times for the same
-// workspace in a tight loop (no awaits between calls) must reject the 6th
-// call, even if trackTaskEnd hasn't been called yet.
-//
-// We can't import the private functions from routes/tasks.ts (it uses .js
-// imports that node:test can't resolve), so we replicate the exact logic
-// here and test it. If the logic in tasks.ts changes, this test must be
-// updated to match.
-// ---------------------------------------------------------------------------
+// The real implementation, not a copy of it: rate-limit.ts is import-free so
+// the node:test runner can load it directly. An earlier version of this file
+// re-implemented the logic inline, which meant the tests kept passing no
+// matter what the shipped limiter did.
+import { createRateLimiter } from "../src/routes/rate-limit.ts";
 
 const MAX_CONCURRENT = 5;
 const MAX_PER_HOUR = 20;
 
-function createRateLimiter() {
-  const runningTaskCount = new Map<string, number>();
-  const taskTimestamps = new Map<string, number[]>();
-
-  function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: string; stamp?: number } {
-    const now = Date.now();
-    const hourAgo = now - 60 * 60 * 1000;
-
-    const running = runningTaskCount.get(workspaceId) ?? 0;
-    if (running >= MAX_CONCURRENT) {
-      return { allowed: false, reason: `too many concurrent tasks (max ${MAX_CONCURRENT})` };
-    }
-    // KEY FIX: increment immediately, before any await
-    runningTaskCount.set(workspaceId, running + 1);
-
-    const timestamps = (taskTimestamps.get(workspaceId) ?? []).filter((t) => t > hourAgo);
-    if (timestamps.length >= MAX_PER_HOUR) {
-      runningTaskCount.set(workspaceId, running); // refund
-      return { allowed: false, reason: `rate limit exceeded (max ${MAX_PER_HOUR}/hour)` };
-    }
-
-    const stamp = now + Math.random();
-    timestamps.push(stamp);
-    taskTimestamps.set(workspaceId, timestamps);
-    return { allowed: true, stamp };
-  }
-
-  function trackTaskEnd(workspaceId: string): void {
-    const current = runningTaskCount.get(workspaceId) ?? 0;
-    runningTaskCount.set(workspaceId, Math.max(0, current - 1));
-  }
-
-  function refundConcurrentSlot(workspaceId: string): void {
-    const current = runningTaskCount.get(workspaceId) ?? 0;
-    runningTaskCount.set(workspaceId, Math.max(0, current - 1));
-  }
-
-  return { checkRateLimit, trackTaskEnd, refundConcurrentSlot };
+function limiter() {
+  return createRateLimiter({
+    maxConcurrent: MAX_CONCURRENT,
+    maxPerWindow: MAX_PER_HOUR,
+    label: "tasks",
+  });
 }
 
 test("rate limit: allows up to MAX_CONCURRENT concurrent tasks", () => {
-  const { checkRateLimit } = createRateLimiter();
+  const rl = limiter();
   const ws = "ws-test-1";
 
   for (let i = 0; i < MAX_CONCURRENT; i++) {
-    const result = checkRateLimit(ws);
-    assert.equal(result.allowed, true, `task ${i + 1} should be allowed`);
+    assert.equal(rl.check(ws).allowed, true, `task ${i + 1} should be allowed`);
   }
 });
 
 test("rate limit: rejects the 6th concurrent task (race-free)", () => {
-  const { checkRateLimit } = createRateLimiter();
+  const rl = limiter();
   const ws = "ws-test-2";
 
-  // Fill up to max concurrent — no awaits between calls
-  for (let i = 0; i < MAX_CONCURRENT; i++) {
-    checkRateLimit(ws);
-  }
+  // Fill up to max concurrent — no awaits between calls. The slot must be
+  // claimed inside check(), before the caller's first await, or a burst of
+  // requests all read the same pre-increment count and all pass.
+  for (let i = 0; i < MAX_CONCURRENT; i++) rl.check(ws);
 
-  // The 6th must be rejected even though trackTaskEnd hasn't been called
-  const result = checkRateLimit(ws);
+  const result = rl.check(ws);
   assert.equal(result.allowed, false);
   assert.match(result.reason!, /too many concurrent/);
 });
 
-test("rate limit: allows new task after one completes", () => {
-  const { checkRateLimit, trackTaskEnd } = createRateLimiter();
+test("rate limit: allows a new task after one completes", () => {
+  const rl = limiter();
   const ws = "ws-test-3";
 
-  for (let i = 0; i < MAX_CONCURRENT; i++) checkRateLimit(ws);
-  assert.equal(checkRateLimit(ws).allowed, false);
+  for (let i = 0; i < MAX_CONCURRENT; i++) rl.check(ws);
+  assert.equal(rl.check(ws).allowed, false);
 
-  trackTaskEnd(ws);
-  const result = checkRateLimit(ws);
-  assert.equal(result.allowed, true);
+  rl.release(ws);
+  assert.equal(rl.check(ws).allowed, true);
 });
 
-test("rate limit: refundConcurrentSlot restores a slot on failure", () => {
-  const { checkRateLimit, refundConcurrentSlot } = createRateLimiter();
+test("rate limit: refundSlot restores a slot on failure", () => {
+  const rl = limiter();
   const ws = "ws-test-4";
 
-  // Simulate: checkRateLimit passes, then createTask fails, refund the slot
-  const r1 = checkRateLimit(ws);
-  assert.equal(r1.allowed, true);
+  // check() passes, then the DB insert fails and the caller refunds.
+  assert.equal(rl.check(ws).allowed, true);
+  rl.refundSlot(ws);
+  assert.equal(rl.concurrent(ws), 0);
+  assert.equal(rl.check(ws).allowed, true);
+});
 
-  refundConcurrentSlot(ws);
+test("rate limit: refundStamp removes exactly this request's window entry", () => {
+  const rl = createRateLimiter({ maxConcurrent: 100, maxPerWindow: 3 });
+  const ws = "ws-refund";
 
-  // Slot should be available again
-  const r2 = checkRateLimit(ws);
-  assert.equal(r2.allowed, true);
+  const first = rl.check(ws);
+  const second = rl.check(ws);
+  rl.check(ws);
+  assert.equal(rl.check(ws).allowed, false, "window is full");
+
+  // Refund the FIRST request's stamp, not the most recent one.
+  rl.refundStamp(ws, first.stamp!);
+  assert.equal(rl.check(ws).allowed, true, "a window slot was freed");
+
+  // A stamp that was never issued must not free anything.
+  rl.refundStamp(ws, 12345);
+  assert.equal(rl.check(ws).allowed, false);
+  assert.notEqual(first.stamp, second.stamp, "stamps are unique per request");
+});
+
+test("rate limit: the window cap rejects before the concurrent cap", () => {
+  const rl = createRateLimiter({ maxConcurrent: 100, maxPerWindow: 2 });
+  const ws = "ws-window";
+
+  assert.equal(rl.check(ws).allowed, true);
+  assert.equal(rl.check(ws).allowed, true);
+  const blocked = rl.check(ws);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason!, /rate limit exceeded/);
+  // A window rejection must hand the concurrent slot back, or a workspace
+  // that hits the hourly cap stays permanently at max concurrency.
+  assert.equal(rl.concurrent(ws), 2);
 });
 
 test("rate limit: different workspaces have independent limits", () => {
-  const { checkRateLimit } = createRateLimiter();
-  const ws1 = "ws-a";
-  const ws2 = "ws-b";
+  const rl = limiter();
 
-  for (let i = 0; i < MAX_CONCURRENT; i++) checkRateLimit(ws1);
+  for (let i = 0; i < MAX_CONCURRENT; i++) rl.check("ws-a");
 
-  // ws1 is full, ws2 should still have room
-  const result = checkRateLimit(ws2);
-  assert.equal(result.allowed, true);
+  assert.equal(rl.check("ws-b").allowed, true);
 });
 
 test("rate limit: concurrent count never exceeds MAX_CONCURRENT under burst", () => {
-  const { checkRateLimit } = createRateLimiter();
+  const rl = limiter();
   const ws = "ws-burst";
 
   let allowed = 0;
   let rejected = 0;
-
-  // Simulate 20 simultaneous requests (no awaits between them)
   for (let i = 0; i < 20; i++) {
-    if (checkRateLimit(ws).allowed) allowed++;
+    if (rl.check(ws).allowed) allowed++;
     else rejected++;
   }
 
   assert.equal(allowed, MAX_CONCURRENT, "exactly MAX_CONCURRENT should be allowed");
   assert.equal(rejected, 20 - MAX_CONCURRENT, "the rest should be rejected");
+  assert.equal(rl.concurrent(ws), MAX_CONCURRENT);
+});
+
+test("rate limit: release never drives the count negative", () => {
+  const rl = limiter();
+  const ws = "ws-underflow";
+
+  rl.release(ws);
+  rl.release(ws);
+  assert.equal(rl.concurrent(ws), 0);
+  assert.equal(rl.check(ws).allowed, true);
+});
+
+test("rate limit: sweep drops entries that aged out of the window", () => {
+  const rl = createRateLimiter({ maxConcurrent: 1, maxPerWindow: 1, windowMs: 1000 });
+  const ws = "ws-sweep";
+
+  assert.equal(rl.check(ws).allowed, true);
+  rl.release(ws);
+  assert.equal(rl.check(ws).allowed, false, "still inside the window");
+  rl.release(ws);
+
+  // Sweep as if an hour of wall clock had passed.
+  rl.sweep(Date.now() + 60 * 60 * 1000);
+  assert.equal(rl.check(ws).allowed, true, "the window entry aged out");
 });

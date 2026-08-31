@@ -23,6 +23,17 @@ import { z } from "zod";
 import { extractWorkspaceId } from "../auth.js";
 import { PROVIDER_ENDPOINTS } from "../agent/endpoints.js";
 import { buildSystemPrompt } from "../chat/prompt.js";
+import { createRateLimiter, startRateLimitSweeper } from "./rate-limit.js";
+
+// Chat runs on the same free Zen quota the workers depend on (100 req/day
+// across all Zen models). Unmetered, one chat client can drain the quota the
+// growth loop needs, so it gets the same treatment as task creation.
+const chatRateLimiter = createRateLimiter({
+  maxConcurrent: 3,
+  maxPerWindow: 40,
+  label: "chat requests",
+});
+startRateLimitSweeper([chatRateLimiter]);
 
 const chatSchema = z.object({
   message: z.string().min(1).max(4000),
@@ -87,6 +98,11 @@ export function registerChatRoutes(
       return reply.code(503).send({ error: "chat is not available (no free model configured)" });
     }
 
+    const rateLimit = chatRateLimiter.check(workspaceId);
+    if (!rateLimit.allowed) {
+      return reply.code(429).send({ error: rateLimit.reason });
+    }
+
     try {
       const response = await fetch(zenEndpoint, {
         method: "POST",
@@ -131,14 +147,16 @@ export function registerChatRoutes(
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       return reply.code(502).send({ error: `chat failed: ${errorMsg.slice(0, 300)}` });
+    } finally {
+      chatRateLimiter.release(workspaceId);
     }
   });
 
   // --- Streaming /chat/stream (SSE) ---
   app.post("/chat/stream", async (request, reply) => {
-    let _workspaceId: string;
+    let workspaceId: string;
     try {
-      _workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
+      workspaceId = extractWorkspaceId(opts.authKey, request.headers as Record<string, string | string[] | undefined>);
     } catch (err) {
       const statusCode = (err as { statusCode?: number }).statusCode ?? 401;
       return reply.code(statusCode).send({ error: (err as Error).message });
@@ -159,10 +177,19 @@ export function registerChatRoutes(
 
     const zenEndpoint = PROVIDER_ENDPOINTS["opencode-zen"];
     if (!zenEndpoint) {
-      reply.raw.writeHead(503, { "content-type": "application/json" });
-      reply.raw.end(JSON.stringify({ error: "chat is not available (no free model configured)" }));
-      return;
+      return reply.code(503).send({ error: "chat is not available (no free model configured)" });
     }
+
+    const rateLimit = chatRateLimiter.check(workspaceId);
+    if (!rateLimit.allowed) {
+      return reply.code(429).send({ error: rateLimit.reason });
+    }
+
+    // From here on the raw socket is written directly, so Fastify must be
+    // told to stop managing this reply — without hijack() it still expects to
+    // serialise and send one itself, and its onSend/onResponse lifecycle runs
+    // against a response that has already been written and ended.
+    reply.hijack();
 
     // SSE headers — keep the connection open for streaming.
     reply.raw.writeHead(200, {
@@ -172,6 +199,9 @@ export function registerChatRoutes(
       "x-accel-buffering": "no",
     });
     const send = (obj: Record<string, unknown>) => {
+      // Writing to a socket the client already dropped throws EPIPE and would
+      // turn a normal disconnect into a logged crash.
+      if (reply.raw.writableEnded || reply.raw.destroyed) return;
       reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
     };
 
@@ -180,6 +210,17 @@ export function registerChatRoutes(
     // "actions" event after the stream closes so the frontend can strip the
     // delimiter from the displayed text and render action buttons.
     let fullText = "";
+
+    // A client that navigates away mid-stream should not leave the upstream
+    // generation running — it keeps burning the shared free quota for tokens
+    // nobody will read. `close` also fires on the normal path once we end the
+    // response ourselves, so `writableEnded` is what separates "the client
+    // left" from "we finished".
+    const disconnected = new AbortController();
+    const onClientClose = () => {
+      if (!reply.raw.writableEnded) disconnected.abort();
+    };
+    reply.raw.on("close", onClientClose);
 
     try {
       const response = await fetch(zenEndpoint, {
@@ -195,7 +236,7 @@ export function registerChatRoutes(
           temperature: 0.7,
           stream: true,
         }),
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.any([AbortSignal.timeout(90_000), disconnected.signal]),
       });
 
       if (!response.ok) {
@@ -272,8 +313,14 @@ export function registerChatRoutes(
       reply.raw.end();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      send({ type: "error", error: `chat failed: ${errorMsg.slice(0, 300)}` });
+      // The client is already gone when it aborted — writing would throw.
+      if (!disconnected.signal.aborted) {
+        send({ type: "error", error: `chat failed: ${errorMsg.slice(0, 300)}` });
+      }
       reply.raw.end();
+    } finally {
+      reply.raw.off("close", onClientClose);
+      chatRateLimiter.release(workspaceId);
     }
   });
 }

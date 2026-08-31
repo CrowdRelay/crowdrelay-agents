@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DbPool } from "../store/db.js";
 import type { OutcomeEnvelopeParsed } from "./structured.js";
+import { normalizeTraceId } from "./trace.js";
 
 /**
  * Emits structured LLM outcomes into the `agent_outcomes` handoff table.
@@ -84,11 +85,11 @@ export async function emitOutcomes(params: {
   traceId?: string | null;
 }): Promise<number> {
   const { workspaceId, taskId, resultId, envelope, client, traceId } = params;
-  const traceUuid = traceId ?? null;
+  const traceUuid = normalizeTraceId(traceId);
   let emitted = 0;
 
   if (envelope.items.length === 0) {
-    await client.query(
+    const envelopeOnly = await client.query(
       `INSERT INTO agent_outcomes
         (id, workspace_id, task_id, result_id, kind, schema_version, payload,
          confidence_basis_points, idempotency_key, trace_id)
@@ -106,7 +107,10 @@ export async function emitOutcomes(params: {
         traceUuid,
       ],
     );
-    return 1;
+    // A re-run of the same task hits the idempotency key and inserts nothing;
+    // reporting 1 there would tell the operator an outcome was emitted when
+    // none was.
+    return envelopeOnly.rowCount ?? 0;
   }
 
   for (let index = 0; index < envelope.items.length; index++) {

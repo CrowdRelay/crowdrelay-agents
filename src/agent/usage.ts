@@ -27,57 +27,37 @@ function bigIntToSafeNumber(value: unknown, fallback: number = 0): number {
   return Math.min(n, Number.MAX_SAFE_INTEGER);
 }
 
+/**
+ * Records one completed provider call in the usage ledger and returns its
+ * estimated cost in micro-USD.
+ *
+ * The call has already happened by the time this runs, so the spend is real
+ * and is ALWAYS recorded — dropping it would under-count the ledger and let
+ * the next budget check pass when it should not. Budget enforcement happens
+ * before the call (`hasRemainingBudget` in the runner's chain loop, and
+ * `checkBudgetForTask` at task creation).
+ *
+ * The budget row is locked FOR UPDATE for the duration of the upsert so
+ * concurrent tasks serialize on the same workspace instead of interleaving
+ * read-modify-write cycles on the ledger.
+ */
 export async function recordUsage(
   pool: DbPool,
   workspaceId: string,
   providerId: string,
   model: ProviderModel,
   usage: { tokensIn: number | null; tokensOut: number | null },
-  defaultMonthlyBudgetMicroUsd?: number,
 ): Promise<number> {
   const costMicroUsd = estimateCostMicroUsd(model, usage.tokensIn ?? 0, usage.tokensOut ?? 0);
 
-  // Atomic budget enforcement: lock the budget row (or a workspace sentinel)
-  // for the duration of the insert + running-total check. Without this,
-  // concurrent tasks can all read remaining > 0 and then all insert, overshooting.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    // Lock the budget row if it exists. If no explicit budget is set, lock
-    // the workspace sentinel via the usage table's per-workspace aggregate.
-    // We use a SELECT ... FOR UPDATE on the budget row to serialize writes.
     await client.query(
       `SELECT monthly_cost_micro_usd FROM agent_service_budgets
        WHERE workspace_id = $1 FOR UPDATE`,
       [workspaceId],
     );
-    // Check remaining budget before inserting. If the budget is exhausted,
-    // reject this usage to prevent overspend by concurrent tasks.
-    if (!model.paid) {
-      // Free-tier models never consume budget — skip the check entirely.
-    } else {
-      const defaultBudget = defaultMonthlyBudgetMicroUsd ?? 0;
-      const { rows: spendRows } = await client.query(
-        `SELECT COALESCE(SUM(cost_micro_usd), 0)::bigint AS spent
-         FROM agent_service_usage
-         WHERE workspace_id = $1
-           AND day >= date_trunc('month', CURRENT_DATE)`,
-        [workspaceId],
-      );
-      const { rows: budgetRows } = await client.query(
-        `SELECT monthly_cost_micro_usd FROM agent_service_budgets WHERE workspace_id = $1`,
-        [workspaceId],
-      );
-      const limit = bigIntToSafeNumber(
-        budgetRows[0]?.monthly_cost_micro_usd,
-        defaultBudget,
-      );
-      const spent = bigIntToSafeNumber(spendRows[0]?.spent, 0);
-      if (limit > 0 && spent + costMicroUsd > limit) {
-        await client.query("ROLLBACK");
-        return 0;
-      }
-    }
     await client.query(
       `INSERT INTO agent_service_usage (workspace_id, day, provider, model_id, requests, tokens_in, tokens_out, cost_micro_usd)
        VALUES ($1, CURRENT_DATE, $2, $3, 1, $4, $5, $6)
@@ -96,6 +76,21 @@ export async function recordUsage(
     client.release();
   }
   return costMicroUsd;
+}
+
+/**
+ * True when the workspace still has monthly budget left for a paid call.
+ * Called by the runner immediately before dispatching a paid model so an
+ * exhausted budget skips the model instead of being discovered after the
+ * money is already spent.
+ */
+export async function hasRemainingBudget(
+  pool: DbPool,
+  workspaceId: string,
+  defaultMonthlyBudgetMicroUsd: number,
+): Promise<boolean> {
+  const state = await getBudgetState(pool, workspaceId, defaultMonthlyBudgetMicroUsd);
+  return state.remainingMicroUsd > 0;
 }
 
 export async function getBudgetState(

@@ -98,7 +98,15 @@ export async function callDevinSession(
     }
 
     if (data.status === "failed" || data.status === "error") {
-      const errorMsg = extractFinalMessage(data.messages) ?? "session failed";
+      // extractFinalMessage throws when there is nothing substantive to
+      // report — on this path that would replace "the session failed" with
+      // "no final message", hiding the actual outcome from the operator.
+      let errorMsg = "session failed";
+      try {
+        errorMsg = extractFinalMessage(data.messages);
+      } catch {
+        // Keep the generic reason.
+      }
       throw new Error(`Devin session failed: ${errorMsg}`);
     }
 

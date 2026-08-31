@@ -13,6 +13,7 @@ import { runTask } from "../agent/runner.js";
 import { getSuggestions } from "../agent/suggestions.js";
 import { checkBudgetForTask } from "../agent/usage.js";
 import { extractWorkspaceId } from "../auth.js";
+import { createRateLimiter, startRateLimitSweeper } from "./rate-limit.js";
 
 const createTaskSchema = z.object({
   template_id: z.string().min(1),
@@ -26,79 +27,12 @@ const createTaskSchema = z.object({
 // Per-workspace rate limit: max 5 concurrent running tasks, max 20 per hour.
 // Without this, a single client can exhaust the free Zen quota (100 req/day)
 // in seconds by spamming task creation.
-const runningTaskCount = new Map<string, number>();
-const taskTimestamps = new Map<string, number[]>();
-const MAX_CONCURRENT = 5;
-const MAX_PER_HOUR = 20;
-
-function checkRateLimit(workspaceId: string): { allowed: boolean; reason?: string; stamp?: number } {
-  const now = Date.now();
-  const hourAgo = now - 60 * 60 * 1000;
-
-  // Concurrent check — increment atomically here (before any await) so that
-  // concurrent requests cannot all pass the check before any of them
-  // increments. If the caller later fails (e.g. createTask throws), it must
-  // call refundConcurrentSlot to decrement.
-  const running = runningTaskCount.get(workspaceId) ?? 0;
-  if (running >= MAX_CONCURRENT) {
-    return { allowed: false, reason: `too many concurrent tasks (max ${MAX_CONCURRENT})` };
-  }
-  runningTaskCount.set(workspaceId, running + 1);
-
-  // Hourly check
-  const timestamps = (taskTimestamps.get(workspaceId) ?? []).filter((t) => t > hourAgo);
-  if (timestamps.length >= MAX_PER_HOUR) {
-    // Refund the concurrent slot we just claimed — hourly limit blocks this request.
-    runningTaskCount.set(workspaceId, running);
-    return { allowed: false, reason: `rate limit exceeded (max ${MAX_PER_HOUR}/hour)` };
-  }
-
-  // Use a unique stamp so refundRateLimit removes exactly this entry, not
-  // whatever happens to be last when the refund runs (another concurrent
-  // request for the same workspace may have pushed its own stamp in between).
-  const stamp = now + Math.random();
-  timestamps.push(stamp);
-  taskTimestamps.set(workspaceId, timestamps);
-  return { allowed: true, stamp };
-}
-
-// Periodic cleanup of empty timestamp arrays — prevents the Map from growing
-// unboundedly as new workspaces are seen over time.
-setInterval(() => {
-  const now = Date.now();
-  const hourAgo = now - 60 * 60 * 1000;
-  for (const [key, timestamps] of taskTimestamps) {
-    const fresh = timestamps.filter((t) => t > hourAgo);
-    if (fresh.length === 0) {
-      taskTimestamps.delete(key);
-    } else if (fresh.length !== timestamps.length) {
-      taskTimestamps.set(key, fresh);
-    }
-  }
-  // Also clean up zero-count running task entries
-  for (const [key, count] of runningTaskCount) {
-    if (count === 0) runningTaskCount.delete(key);
-  }
-}, 10 * 60 * 1000).unref();
-
-function trackTaskEnd(workspaceId: string): void {
-  const current = runningTaskCount.get(workspaceId) ?? 0;
-  runningTaskCount.set(workspaceId, Math.max(0, current - 1));
-}
-
-function refundConcurrentSlot(workspaceId: string): void {
-  const current = runningTaskCount.get(workspaceId) ?? 0;
-  runningTaskCount.set(workspaceId, Math.max(0, current - 1));
-}
-
-function refundRateLimit(workspaceId: string, stamp: number): void {
-  const timestamps = taskTimestamps.get(workspaceId);
-  if (!timestamps) return;
-  const index = timestamps.lastIndexOf(stamp);
-  if (index >= 0) {
-    timestamps.splice(index, 1);
-  }
-}
+const taskRateLimiter = createRateLimiter({
+  maxConcurrent: 5,
+  maxPerWindow: 20,
+  label: "tasks",
+});
+startRateLimitSweeper([taskRateLimiter]);
 
 export function registerTaskRoutes(
   app: FastifyInstance,
@@ -181,7 +115,7 @@ export function registerTaskRoutes(
       }
     }
 
-    const rateLimit = checkRateLimit(workspaceId);
+    const rateLimit = taskRateLimiter.check(workspaceId);
     if (!rateLimit.allowed || rateLimit.stamp === undefined) {
       return reply.code(429).send({ error: rateLimit.reason });
     }
@@ -193,8 +127,8 @@ export function registerTaskRoutes(
     } catch (err) {
       // DB insert failed — refund the concurrent slot and the hourly stamp
       // so the client isn't penalised for a server-side failure.
-      refundConcurrentSlot(workspaceId);
-      refundRateLimit(workspaceId, rateStamp);
+      taskRateLimiter.refundSlot(workspaceId);
+      taskRateLimiter.refundStamp(workspaceId, rateStamp);
       throw err;
     }
 
@@ -215,11 +149,14 @@ export function registerTaskRoutes(
       fallbackGroqKey: opts.fallbackGroqKey,
       outcomesEnabled: opts.outcomesEnabled,
       tier: parsed.data.tier,
-      traceId: typeof request.headers["x-trace-id"] === "string" ? request.headers["x-trace-id"] as string : null,
+      defaultMonthlyBudgetMicroUsd: opts.defaultMonthlyBudgetMicroUsd,
+      // Non-UUID trace ids are dropped by emitOutcomes rather than failing
+      // the outcome insert — see normalizeTraceId.
+      traceId: typeof request.headers["x-trace-id"] === "string" ? request.headers["x-trace-id"] : null,
     }).catch((err) => {
       console.error(`Task ${task.id} crashed:`, err);
     }).finally(() => {
-      trackTaskEnd(workspaceId);
+      taskRateLimiter.release(workspaceId);
     });
     opts.inFlightTasks.add(taskPromise);
     void taskPromise.finally(() => opts.inFlightTasks.delete(taskPromise));

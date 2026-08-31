@@ -11,6 +11,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { extractWorkspaceId } from "../auth.js";
 import type { DbPool } from "../store/db.js";
 import {
@@ -25,6 +26,32 @@ import {
   storeRedditCredentials,
   type RedditCredentials,
 } from "../agent/reddit-browser.js";
+
+// Reddit usernames are 3-20 chars of [A-Za-z0-9_-]. Validating the shape here
+// keeps a typo from becoming a login attempt (and a failed-credential mark)
+// and bounds what gets sealed into the encrypted blob.
+const redditCredentialsSchema = z.object({
+  reddit_username: z.string().trim().min(3).max(20).regex(
+    /^[A-Za-z0-9_-]+$/,
+    "reddit_username may only contain letters, digits, underscores and hyphens",
+  ),
+  reddit_password: z.string().min(1).max(200),
+});
+
+const scrapeSchema = z.object({
+  queries: z.array(z.string().trim().min(1).max(200)).min(1).max(10),
+  limit: z.number().int().positive().optional(),
+});
+
+const postSchema = z.object({
+  subreddit: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1).max(300),
+  body: z.string().max(40_000),
+});
+
+const metricsSchema = z.object({
+  post_id: z.string().trim().min(1).max(50),
+});
 
 export function registerRedditRoutes(
   app: FastifyInstance,
@@ -98,17 +125,16 @@ export function registerRedditRoutes(
     const { workspaceId, errorReply } = requireWorkspaceId(request);
     if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
 
-    const body = request.body as RedditCredentials | null;
-    const hasReddit = !!body?.reddit_username && !!body?.reddit_password;
-    if (!hasReddit) {
+    const parsed = redditCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
       return reply.code(400).send({
-        error: "provide reddit_username + reddit_password",
+        error: parsed.error.issues[0]?.message ?? "provide reddit_username + reddit_password",
       });
     }
 
     const credentials: RedditCredentials = {
-      reddit_username: body?.reddit_username,
-      reddit_password: body?.reddit_password,
+      reddit_username: parsed.data.reddit_username,
+      reddit_password: parsed.data.reddit_password,
     };
 
     await storeRedditCredentials(opts.pool, workspaceId as string, credentials, opts.encryptionKey);
@@ -126,25 +152,19 @@ export function registerRedditRoutes(
     const { workspaceId, errorReply } = requireWorkspaceId(request);
     if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
 
-    const body = request.body as { queries?: unknown; limit?: unknown } | null;
-    const queries = Array.isArray(body?.queries)
-      ? body?.queries.filter((q): q is string => typeof q === "string")
-      : [];
-    if (queries.length === 0) {
-      return reply.code(400).send({ error: "queries (non-empty string array) is required" });
+    const parsed = scrapeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "queries (1-10 non-empty strings) is required",
+      });
     }
-    if (queries.length > 10) {
-      return reply.code(400).send({ error: "max 10 queries per scrape call" });
-    }
-    const rawLimit = Number(body?.limit);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 10;
 
     try {
       const outcome = await scrapeRedditQueries(
         opts.pool,
         workspaceId as string,
-        queries,
-        Math.min(limit, MAX_SCRAPE_LIMIT),
+        parsed.data.queries,
+        Math.min(parsed.data.limit ?? 10, MAX_SCRAPE_LIMIT),
       );
       return reply.send(outcome);
     } catch (error) {
@@ -189,21 +209,19 @@ export function registerRedditRoutes(
     const { workspaceId, errorReply } = requireWorkspaceId(request);
     if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
 
-    const body = request.body as { subreddit?: string; title?: string; body?: string } | null;
-    if (
-      typeof body?.subreddit !== "string" || !body.subreddit.trim() ||
-      typeof body?.title !== "string" || !body.title.trim() ||
-      typeof body?.body !== "string"
-    ) {
-      return reply.code(400).send({ error: "subreddit, title and body are required" });
+    const parsed = postSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "subreddit, title and body are required",
+      });
     }
 
     try {
       const result = await getRedditBrowser(opts.pool).submitPost(
         workspaceId as string,
-        body.subreddit,
-        body.title,
-        body.body,
+        parsed.data.subreddit,
+        parsed.data.title,
+        parsed.data.body,
       );
       return reply.send(result);
     } catch (error) {
@@ -219,15 +237,17 @@ export function registerRedditRoutes(
     const { workspaceId, errorReply } = requireWorkspaceId(request);
     if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
 
-    const body = request.body as { post_id?: string } | null;
-    if (typeof body?.post_id !== "string" || !body.post_id.trim()) {
-      return reply.code(400).send({ error: "post_id is required" });
+    const parsed = metricsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "post_id is required",
+      });
     }
 
     try {
       const metrics = await getRedditBrowser(opts.pool).getPostMetrics(
         workspaceId as string,
-        body.post_id,
+        parsed.data.post_id,
       );
       return reply.send(metrics);
     } catch (error) {

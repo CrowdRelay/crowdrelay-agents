@@ -229,6 +229,8 @@ export class RedditBrowser {
   private context: BrowserContext | null = null;
   private authed = false;
   private ensurePromise: Promise<void> | null = null;
+  /** Workspace the in-flight establishSession belongs to. */
+  private pendingWorkspaceId: string | null = null;
   /** Workspace whose credentials established the current session. */
   private sessionWorkspaceId: string | null = null;
   private readonly profileDir: string;
@@ -245,11 +247,13 @@ export class RedditBrowser {
   /** Drops the current browser session so the next call re-logins. */
   async invalidate(): Promise<void> {
     this.authed = false;
+    this.sessionWorkspaceId = null;
     await this.closeContext();
   }
 
   async close(): Promise<void> {
     this.authed = false;
+    this.sessionWorkspaceId = null;
     await this.closeContext();
   }
 
@@ -267,24 +271,42 @@ export class RedditBrowser {
 
   /**
    * Returns a logged-in browser context, logging in only when needed.
-   * Single-flight: concurrent callers for the same workspace await the same
-   * establishment promise. If a different workspace requests a session, the
-   * current session is invalidated and re-established with its credentials.
+   *
+   * Single-flight per workspace: concurrent callers for the SAME workspace
+   * share one establishment promise. A caller for a *different* workspace
+   * must not join it — the in-flight login belongs to whoever started it, and
+   * joining would hand this caller a browser logged into another tenant's
+   * Reddit account. Those callers wait the establishment out and then
+   * establish their own.
    */
   async ensureSession(workspaceId: string): Promise<BrowserContext> {
+    while (this.ensurePromise) {
+      const inFlight = this.ensurePromise;
+      if (this.pendingWorkspaceId === workspaceId) {
+        await inFlight;
+        if (this.context && this.authed && this.sessionWorkspaceId === workspaceId) {
+          return this.context;
+        }
+        break; // it was invalidated in the meantime — establish our own
+      }
+      // Another workspace's login: let it finish, but its outcome is not ours.
+      await inFlight.catch(() => {});
+    }
+
     if (this.context && this.authed && this.sessionWorkspaceId === workspaceId) {
       return this.context;
     }
-    // A different workspace is requesting the session — invalidate the
-    // current one so establishSession logs in with the right credentials.
+    // A different workspace holds the session — invalidate it so
+    // establishSession logs in with the right credentials.
     if (this.context && this.sessionWorkspaceId !== workspaceId) {
       await this.invalidate();
     }
-    if (!this.ensurePromise) {
-      this.ensurePromise = this.establishSession(workspaceId).finally(() => {
-        this.ensurePromise = null;
-      });
-    }
+
+    this.pendingWorkspaceId = workspaceId;
+    this.ensurePromise = this.establishSession(workspaceId).finally(() => {
+      this.ensurePromise = null;
+      this.pendingWorkspaceId = null;
+    });
     await this.ensurePromise;
     return this.context as BrowserContext;
   }
@@ -325,7 +347,7 @@ export class RedditBrowser {
 
     const page = await this.context.newPage();
     try {
-      if (await this.hasValidSession(page)) {
+      if (await this.hasValidSession(page, credentials.reddit_username)) {
         this.authed = true;
         this.sessionWorkspaceId = workspaceId;
         return;
@@ -352,7 +374,7 @@ export class RedditBrowser {
               400,
             );
           }
-          if (await this.hasValidSession(page)) {
+          if (await this.hasValidSession(page, credentials.reddit_username)) {
             this.authed = true;
             this.sessionWorkspaceId = workspaceId;
             return;
@@ -386,8 +408,16 @@ export class RedditBrowser {
    * first (fast, works on Mac/residential). If that 403s (container
    * fingerprinting), falls back to checking the HTML homepage for a
    * logged-in indicator (the "Log In" button is absent when authenticated).
+   *
+   * `expectedUsername` guards the shared browser profile: the profile
+   * directory persists one Reddit login across workspaces, so a session left
+   * behind by another tenant would otherwise be accepted and used to act as
+   * the wrong account. When /me.json names a different user we report the
+   * session invalid and force a fresh login. The HTML fallback cannot read
+   * the account name, so that path can only answer "logged in or not".
    */
-  private async hasValidSession(page: Page): Promise<boolean> {
+  private async hasValidSession(page: Page, expectedUsername?: string): Promise<boolean> {
+    const expected = expectedUsername?.trim().toLowerCase();
     try {
       // Fast path: JSON API (works outside containers)
       const response = await page.goto(`${REDDIT_ORIGIN}/me.json`, {
@@ -397,7 +427,14 @@ export class RedditBrowser {
       if (response && response.status() === 200) {
         try {
           const body = (await response.json()) as { data?: { name?: string } };
-          if (typeof body?.data?.name === "string" && body.data.name.length > 0) {
+          const name = body?.data?.name;
+          if (typeof name === "string" && name.length > 0) {
+            if (expected && name.toLowerCase() !== expected) {
+              console.warn(
+                `[reddit-browser] cached profile is signed in as u/${name}, expected u/${expectedUsername} — forcing re-login`,
+              );
+              return false;
+            }
             return true;
           }
         } catch {
@@ -888,10 +925,10 @@ export async function scrapeRedditQueries(
   const results: ScrapeResultRow[] = [];
   const errors: string[] = [];
   const boundedLimit = Math.max(1, Math.min(limit, MAX_SCRAPE_LIMIT));
+  const pending = queries.map((q) => q.trim()).filter(Boolean);
 
-  for (const rawQuery of queries) {
-    const query = rawQuery.trim();
-    if (!query) continue;
+  for (let i = 0; i < pending.length; i++) {
+    const query = pending[i];
     try {
       // Use HTML scraping — Reddit blocks .json endpoints from containers.
       const rows = await browser.searchSubredditsHtml(
@@ -907,7 +944,11 @@ export async function scrapeRedditQueries(
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`${query}: ${message}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, SCRAPE_QUERY_SPACING_MS));
+    // Space out queries so the browser looks human — but not after the last
+    // one, where it only delays the caller (the MCP tool runs this inline).
+    if (i < pending.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, SCRAPE_QUERY_SPACING_MS));
+    }
   }
 
   return { results, errors };
