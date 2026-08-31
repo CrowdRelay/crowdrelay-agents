@@ -120,3 +120,27 @@ jobs:
             "${image}:sha-${IMAGE_SHA}-amd64" \
             "${image}:sha-${IMAGE_SHA}-arm64"
           printf 'MERGE=PASS image=%s tag=%s\n' "$image" "$sha_tag"
+
+      - name: Emit immutable digest artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          owner_lower="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lower}/crowdrelay-agents"
+          sha_tag="sha-${IMAGE_SHA}"
+          digest="$(docker buildx imagetools inspect "${image}:${sha_tag}" --format '{{.Manifest.Digest}}')"
+          [[ -n "$digest" ]] || { echo "Failed to resolve manifest digest" >&2; exit 1; }
+          mkdir -p image-digest
+          {
+            printf 'AGENT_SERVICE_RELEASE_SHA=%s\n' "${IMAGE_SHA}"
+            printf 'AGENT_SERVICE_IMAGE_DIGEST=%s\n' "$digest"
+          } > image-digest/image.env
+          sha256sum image-digest/image.env > image-digest/image.env.sha256
+          printf 'DIGEST=%s\n' "$digest"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-service-image-digest-${{ env.IMAGE_SHA }}
+          path: image-digest/
+          retention-days: 30
