@@ -73,7 +73,7 @@ async function validateAnthropic(key: string): Promise<{ valid: boolean; error?:
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5",
         max_tokens: 1,
         messages: [{ role: "user", content: "hi" }],
       }),
@@ -228,15 +228,21 @@ export const PROVIDERS: ProviderDef[] = [
     id: "anthropic",
     name: "Anthropic (Claude)",
     description:
-      "Claude Opus 4.1, Sonnet 4, Haiku. Connect with an API key from console.anthropic.com.",
+      "Claude Opus 5, Sonnet 5, Haiku 4.5. Connect with an API key from console.anthropic.com.",
     authMethod: "api_key",
     protocol: "anthropic",
     tier: "premium",
     validateApiKey: validateAnthropic,
+    // Current model IDs carry no date suffix — `claude-opus-5`, not
+    // `claude-opus-5-20260101`. The dated forms below were Opus 4.1 / Sonnet 4
+    // / Haiku 3.5, which Anthropic now warns about on every request. Opus 5 and
+    // Sonnet 5 are also cheaper than the models they replace ($5/$25 against
+    // Opus 4.1's $15/$75; $2/$10 against Sonnet 4's $3/$15), so this is not a
+    // cost tradeoff. All three take 1M context except Haiku.
     models: [
-      { id: "claude-opus-4-1-20250805", name: "Claude Opus 4.1 (200K)", contextWindow: 200_000, bestFor: "Most powerful Claude, deep reasoning, complex coding", paid: true, pricing: { inputPerMTokUsd: 15, outputPerMTokUsd: 75 } },
-      { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4 (200K)", contextWindow: 200_000, bestFor: "Excellent writing, analysis, coding", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
-      { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku (200K)", contextWindow: 200_000, bestFor: "Fast and affordable, good for content", paid: true, pricing: { inputPerMTokUsd: 0.8, outputPerMTokUsd: 4 } },
+      { id: "claude-opus-5", name: "Claude Opus 5 (1M)", contextWindow: 1_000_000, bestFor: "Deep reasoning, complex coding, long-horizon agentic work", paid: true, pricing: { inputPerMTokUsd: 5, outputPerMTokUsd: 25 } },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5 (1M)", contextWindow: 1_000_000, bestFor: "Excellent writing, analysis, coding at a lower price than Opus", paid: true, pricing: { inputPerMTokUsd: 2, outputPerMTokUsd: 10 } },
+      { id: "claude-haiku-4-5", name: "Claude Haiku 4.5 (200K)", contextWindow: 200_000, bestFor: "Cheapest Claude — high-volume content, classification, drafts", paid: true, pricing: { inputPerMTokUsd: 1, outputPerMTokUsd: 5 } },
     ],
   },
   {
@@ -277,17 +283,28 @@ export const PROVIDERS: ProviderDef[] = [
     protocol: "openai",
     tier: "premium",
     validateApiKey: validateOpenRouter,
+    // Every id below was checked against https://openrouter.ai/api/v1/models.
+    // Four were wrong and would have 404'd at request time — including both
+    // free models, which meant the free tier never worked at all:
+    // `nvidia/nemotron-3-ultra:free` (real: `-550b-a55b:free`),
+    // `minimax/m3:free` (real: `minimax/minimax-m3:free`),
+    // `nvidia/nemotron-3-super:free` (real: `-120b-a12b:free`), and
+    // `google/gemini-2.0-flash-001` (retired; 2.5 Flash replaces it).
+    // Re-verify against that endpoint before editing — a slug that does not
+    // resolve fails only when a worker actually dispatches.
     models: [
       { id: "openai/o3", name: "o3 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful OpenAI, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 66 } },
-      { id: "anthropic/claude-opus-4.1", name: "Claude Opus 4.1 via OpenRouter", contextWindow: 200_000, bestFor: "Most powerful Claude via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 17, outputPerMTokUsd: 82 } },
+      { id: "anthropic/claude-opus-5", name: "Claude Opus 5 via OpenRouter", contextWindow: 1_000_000, bestFor: "Most powerful Claude via OpenRouter, 1M context", paid: true, pricing: { inputPerMTokUsd: 5, outputPerMTokUsd: 25 } },
+      { id: "anthropic/claude-sonnet-5", name: "Claude Sonnet 5 via OpenRouter", contextWindow: 1_000_000, bestFor: "Excellent writing via OpenRouter, cheaper than Opus", paid: true, pricing: { inputPerMTokUsd: 2, outputPerMTokUsd: 10 } },
+      { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5 via OpenRouter", contextWindow: 200_000, bestFor: "Cheapest Claude via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 1, outputPerMTokUsd: 5 } },
       { id: "openai/gpt-4o", name: "GPT-4o via OpenRouter", contextWindow: 128_000, bestFor: "Best overall, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 2.75, outputPerMTokUsd: 11 } },
-      { id: "anthropic/claude-sonnet-4", name: "Claude Sonnet 4 via OpenRouter", contextWindow: 200_000, bestFor: "Excellent writing via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
-      { id: "google/gemini-2.0-flash-001", name: "Gemini 2.0 Flash via OpenRouter", contextWindow: 1_000_000, bestFor: "Huge context via OpenRouter", paid: true, pricing: { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.4 } },
+      { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash via OpenRouter", contextWindow: 1_048_576, bestFor: "Huge context, very cheap", paid: true, pricing: { inputPerMTokUsd: 0.3, outputPerMTokUsd: 2.5 } },
       { id: "x-ai/grok-4.6", name: "Grok 4.6 via OpenRouter", contextWindow: 500_000, bestFor: "Grok's latest, accessed through OpenRouter", paid: true, pricing: { inputPerMTokUsd: 3, outputPerMTokUsd: 15 } },
       { id: "z-ai/glm-5.2:free", name: "GLM-5.2 Free via OpenRouter", contextWindow: 200_000, bestFor: "Free tier of GLM-5.2 — same family as Devin's GLM-5.2 High", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
-      { id: "nvidia/nemotron-3-ultra:free", name: "Nemotron 3 Ultra Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Most-used free model on OpenRouter, 1M context, strong reasoning", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
-      { id: "minimax/m3:free", name: "MiniMax M3 Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Strong general-purpose model, 1M context", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
-      { id: "nvidia/nemotron-3-super:free", name: "Nemotron 3 Super Free via OpenRouter", contextWindow: 262_000, bestFor: "Fast reasoning, good for structured output", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "nvidia/nemotron-3-ultra-550b-a55b:free", name: "Nemotron 3 Ultra Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Free, 1M context, strong reasoning — best free option for hard tasks", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "minimax/minimax-m3:free", name: "MiniMax M3 Free via OpenRouter", contextWindow: 1_048_576, bestFor: "Free, 1M context, strong general-purpose", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "nvidia/nemotron-3.5-lightning:free", name: "Nemotron 3.5 Lightning Free via OpenRouter", contextWindow: 1_000_000, bestFor: "Free and fast — high-volume drafting and structured output", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
+      { id: "nvidia/nemotron-3-super-120b-a12b:free", name: "Nemotron 3 Super Free via OpenRouter", contextWindow: 262_144, bestFor: "Free reasoning model, good for structured output", paid: false, pricing: { inputPerMTokUsd: 0, outputPerMTokUsd: 0 } },
     ],
   },
   {
@@ -315,7 +332,7 @@ export const PROVIDERS: ProviderDef[] = [
     validateApiKey: validateNonEmpty,
     models: [
       { id: "gpt-4o", name: "GPT-4o via Copilot", contextWindow: 128_000, bestFor: "Best overall through your Copilot plan", paid: false },
-      { id: "claude-sonnet-4", name: "Claude Sonnet 4 via Copilot", contextWindow: 200_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5 via Copilot", contextWindow: 1_000_000, bestFor: "Excellent writing through your Copilot plan", paid: false },
       { id: "gemini-2.0-flash-001", name: "Gemini 2.0 Flash via Copilot", contextWindow: 1_000_000, bestFor: "Huge context through your Copilot plan", paid: false },
     ],
   },
