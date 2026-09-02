@@ -339,7 +339,21 @@ export class RedditBrowser {
       locale: "en-US",
       // --no-sandbox: the container runs as root. AutomationControlled off
       // keeps navigator.webdriver out of Reddit's bot heuristics.
-      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+      args: [
+        "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        // Chromium keeps its renderer shared memory in /dev/shm, and Docker
+        // gives a container 64 MB of it by default. That is not enough: the
+        // renderer dies during startup and Playwright reports
+        // "browserType.launchPersistentContext: Target page, context or
+        // browser has been closed", which reads as a Playwright fault rather
+        // than a container one. This moves that allocation to a temp file,
+        // which is slower and always large enough.
+        "--disable-dev-shm-usage",
+        // A headless-shaped container has no GPU, and probing for one is
+        // another way the renderer falls over on launch.
+        "--disable-gpu",
+      ],
     });
     // Hide the webdriver flag before any page script runs (Reddit checks it).
     await this.context.addInitScript(
