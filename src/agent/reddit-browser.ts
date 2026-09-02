@@ -472,6 +472,11 @@ export class RedditBrowser {
         waitUntil: "domcontentloaded",
         timeout: SESSION_PROBE_TIMEOUT_MS,
       });
+      if (response && response.status() !== 200) {
+        console.warn(
+          `[reddit-browser] session probe: /me.json returned ${response.status()}`,
+        );
+      }
       if (response && response.status() === 200) {
         try {
           const body = (await response.json()) as { data?: { name?: string } };
@@ -502,8 +507,23 @@ export class RedditBrowser {
         .first()
         .isVisible({ timeout: 3000 })
         .catch(() => false);
+      if (hasLoginButton) {
+        console.warn(
+          "[reddit-browser] session probe: homepage still shows a login button",
+        );
+      }
       return !hasLoginButton;
-    } catch {
+    } catch (error) {
+      // Say why. A bare `return false` here surfaces as "login completed but
+      // the session is not valid" with nothing to act on, and after three of
+      // those the credential is marked invalid — so the one place that knows
+      // whether this was a timeout, a 403 or a redirect was also the one place
+      // throwing that away.
+      console.warn(
+        `[reddit-browser] session probe failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       return false;
     }
   }
@@ -538,7 +558,26 @@ export class RedditBrowser {
       // No OTP field appeared — continue waiting for the redirect.
     }
 
-    await page.waitForURL(/reddit\.com/, { timeout: PAGE_TIMEOUT_MS });
+    // Wait to leave the login page, not to be on reddit.com.
+    //
+    // This was `waitForURL(/reddit\.com/)`, and the login page is already
+    // `reddit.com/login/` — so the pattern matched the URL the browser was
+    // standing on and returned immediately, without waiting for anything at
+    // all. The session probe then ran before the login had completed and
+    // reported "login completed but the session is not valid", three times,
+    // which marked working credentials invalid.
+    //
+    // A wrong password keeps the browser on /login, so this now times out
+    // there instead of racing past it, and the error says which happened.
+    await page
+      .waitForURL((url) => !/\/login/.test(url.pathname), { timeout: PAGE_TIMEOUT_MS })
+      .catch(() => {
+        throw new RedditBrowserError(
+          "reddit login did not leave the login page — the password was rejected " +
+            "or a challenge is being shown",
+          400,
+        );
+      });
   }
 
   private async loginWithGoogle(page: Page, email: string, password: string): Promise<void> {

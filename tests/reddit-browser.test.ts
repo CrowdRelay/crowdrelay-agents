@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 // Dependency-free module (no .js-extension imports) so the node:test runner
 // with --experimental-strip-types can load it directly.
 import {
@@ -121,5 +122,69 @@ test("the navigation budget covers the slowest measured production page", () => 
     ELEMENT_TIMEOUT_MS >= 30_000,
     "element waits must scale with the page budget; hydration is slow on the " +
       "same host that makes navigation slow",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Login navigation
+// ---------------------------------------------------------------------------
+
+test("the post-login wait does not match the login page itself", () => {
+  // `waitForURL(/reddit\.com/)` looked like "wait until we are on Reddit" and
+  // was really "return immediately": the browser is already standing on
+  // reddit.com/login/ when it runs. The session probe then ran before the
+  // login completed, reported "login completed but the session is not valid"
+  // three times, and marked working credentials invalid.
+  //
+  // Pinned as a predicate over the pathname, because any pattern that a
+  // /login URL satisfies reintroduces the bug while reading as a fix.
+  // Scoped to the Reddit-native login. The Google path also waits for
+  // reddit.com, and there it is correct: that browser is sitting on
+  // accounts.google.com and genuinely waiting to come back.
+  const source = readFileSync(
+    new URL("../src/agent/reddit-browser.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("private async loginWithReddit");
+  const end = source.indexOf("private async loginWithGoogle");
+  assert.ok(start !== -1 && end > start, "loginWithReddit not found");
+  const body = source.slice(start, end);
+  assert.doesNotMatch(
+    body,
+    /await page\.waitForURL\(\/reddit/,
+    "the post-login wait matches reddit.com, which the login page already is",
+  );
+  assert.match(
+    body,
+    /waitForURL\(\(url\) =>/,
+    "the post-login wait should be a predicate over the URL it must leave",
+  );
+});
+
+test("a login that never leaves /login is reported as a rejection", () => {
+  // Timing out silently would put us back where we started: an invalid
+  // credential and no idea whether the password was wrong or the page hung.
+  const source = readFileSync(
+    new URL("../src/agent/reddit-browser.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /did not leave the login page/);
+});
+
+test("the session probe explains why it said no", () => {
+  // A bare `return false` surfaces as "login completed but the session is not
+  // valid", and three of those mark the credential invalid — so the one place
+  // that knows whether this was a timeout, a 403 or a redirect must not throw
+  // that away.
+  const source = readFileSync(
+    new URL("../src/agent/reddit-browser.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /session probe failed: /);
+  assert.match(source, /\/me\.json returned /);
+  assert.doesNotMatch(
+    source,
+    /\n    \} catch \{\n      return false;\n    \}\n  \}/,
+    "the probe swallows its error again",
   );
 });
