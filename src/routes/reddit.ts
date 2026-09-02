@@ -53,6 +53,16 @@ const metricsSchema = z.object({
   post_id: z.string().trim().min(1).max(50),
 });
 
+// Subreddit names are 3-21 chars of [A-Za-z0-9_]. Bounding the shape here keeps
+// a malformed place URL from becoming an arbitrary authenticated navigation.
+const observeSchema = z.object({
+  subreddit: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_]{2,21}$/, "subreddit must be 2-21 chars of A-Za-z0-9_"),
+  limit: z.number().int().min(1).max(50).optional(),
+});
+
 export function registerRedditRoutes(
   app: FastifyInstance,
   opts: {
@@ -250,6 +260,79 @@ export function registerRedditRoutes(
         parsed.data.post_id,
       );
       return reply.send(metrics);
+    } catch (error) {
+      return browserErrorReply(reply, error);
+    }
+  });
+
+  /**
+   * POST /reddit/observe — one read-only look at a subreddit.
+   *
+   * The community-intelligence pipeline had 28 active Reddit places and no
+   * adapter that claimed them, because nothing could read a subreddit: the
+   * public .json endpoints return 403, the API app was rejected, and proxy
+   * IPs are blocked. The logged-in browser session is the one path that
+   * works, and it already exists for posting.
+   *
+   * Read-only by construction — two authenticated .json GETs, no writes, no
+   * votes, no comments. Returns what an observation needs: how big the
+   * community is, how many are there now, and what is actually being posted.
+   */
+  app.post("/reddit/observe", async (request, reply) => {
+    const { workspaceId, errorReply } = requireWorkspaceId(request);
+    if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
+
+    const parsed = observeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "subreddit is required",
+      });
+    }
+    const { subreddit } = parsed.data;
+    const limit = parsed.data.limit ?? 25;
+
+    try {
+      const browser = getRedditBrowser(opts.pool);
+      const about = (await browser.getJson(
+        workspaceId as string,
+        `/r/${subreddit}/about.json`,
+      )) as { data?: Record<string, unknown> } | null;
+      const listing = (await browser.getJson(
+        workspaceId as string,
+        `/r/${subreddit}/hot.json?limit=${limit}`,
+      )) as { data?: { children?: Array<{ data?: Record<string, unknown> }> } } | null;
+
+      const info = about?.data ?? {};
+      const posts = (listing?.data?.children ?? [])
+        .map((child) => child.data ?? {})
+        .filter((post) => typeof post.title === "string");
+
+      // `subscribers` is community size — reach, never audience. It is
+      // reported as an observation of the place, not as followers of the
+      // band, and the growth-metric vocabulary keeps it out of the
+      // audience series for exactly that reason.
+      return reply.send({
+        subreddit,
+        title: typeof info.title === "string" ? info.title : null,
+        public_description:
+          typeof info.public_description === "string" ? info.public_description : null,
+        subscribers: typeof info.subscribers === "number" ? info.subscribers : null,
+        active_user_count:
+          typeof info.active_user_count === "number" ? info.active_user_count : null,
+        over18: info.over18 === true,
+        created_utc: typeof info.created_utc === "number" ? info.created_utc : null,
+        observed_at: new Date().toISOString(),
+        posts: posts.map((post) => ({
+          id: typeof post.id === "string" ? post.id : null,
+          title: post.title as string,
+          author: typeof post.author === "string" ? post.author : null,
+          score: typeof post.score === "number" ? post.score : null,
+          num_comments: typeof post.num_comments === "number" ? post.num_comments : null,
+          created_utc: typeof post.created_utc === "number" ? post.created_utc : null,
+          link_flair_text:
+            typeof post.link_flair_text === "string" ? post.link_flair_text : null,
+        })),
+      });
     } catch (error) {
       return browserErrorReply(reply, error);
     }
