@@ -28,6 +28,16 @@ export interface ProviderModel {
 export interface ProviderDef {
   id: string;
   name: string;
+  /**
+   * What this provider is for and where to get a key — the part a person
+   * writes. It must NOT list model names.
+   *
+   * It used to, and every list went stale the moment `models` changed: the
+   * connection screen advertised "Claude Opus 4.1, Sonnet 4" long after the
+   * registry moved to Opus 5, and offered "Llama 3.3 70B, Mixtral" from a
+   * provider that serves neither. `providerSummaries()` now appends the real
+   * model names, so the two cannot disagree.
+   */
   description: string;
   authMethod: AuthMethod;
   protocol: LlmProtocol;
@@ -212,7 +222,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "openai",
     name: "OpenAI",
     description:
-      "GPT-4o, o3, o1, and more. Connect with an API key from platform.openai.com.",
+      "Connect with an API key from platform.openai.com.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
@@ -228,7 +238,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "anthropic",
     name: "Anthropic (Claude)",
     description:
-      "Claude Opus 5, Sonnet 5, Haiku 4.5. Connect with an API key from console.anthropic.com.",
+      "Connect with an API key from console.anthropic.com.",
     authMethod: "api_key",
     protocol: "anthropic",
     tier: "premium",
@@ -248,7 +258,7 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "google",
     name: "Google (Gemini)",
-    description: "Gemini 2.0 Flash, 1.5 Pro. Paste an API key from AI Studio.",
+    description: "Paste an API key from AI Studio.",
     authMethod: "api_key",
     protocol: "openai", // Google exposes an OpenAI-compatible endpoint
     tier: "premium",
@@ -263,7 +273,7 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "groq",
     name: "Groq",
-    description: "Llama 3.3 70B, Mixtral, and more. Ultra-fast inference. Paste your API key from console.groq.com.",
+    description: "Ultra-fast inference. Paste your API key from console.groq.com.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "free",
@@ -278,7 +288,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "openrouter",
     name: "OpenRouter (All Models)",
     description:
-      "One connection unlocks GPT-4, Claude, Gemini, Llama, and 200+ other models. Paste your API key from openrouter.ai/keys.",
+      "One key unlocks 200+ models across every major lab. Paste your API key from openrouter.ai/keys.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
@@ -310,7 +320,7 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "xai",
     name: "xAI (Grok)",
-    description: "Grok 4.6, 4.5, and 4.3. Paste your API key from console.x.ai. OpenAI-compatible endpoint.",
+    description: "Paste your API key from console.x.ai. OpenAI-compatible endpoint.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
@@ -325,7 +335,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "github-copilot",
     name: "GitHub Copilot",
     description:
-      "Use your Copilot subscription to run models like GPT-4o and Claude. Paste your Copilot API key.",
+      "Runs on your existing Copilot subscription rather than a separate bill. Paste your Copilot API key.",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
@@ -340,7 +350,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "zhipu",
     name: "Zhipu AI (GLM)",
     description:
-      "GLM-5.3, GLM-5.1 — powerful Chinese AI models with strong agentic and tool-use capabilities. OpenAI-compatible API. Paste your API key from open.bigmodel.cn (China) or z.ai (international).",
+      "Strong agentic and tool-use models on an OpenAI-compatible API. Paste your API key from open.bigmodel.cn (China) or z.ai (international).",
     authMethod: "api_key",
     protocol: "openai",
     tier: "premium",
@@ -355,7 +365,7 @@ export const PROVIDERS: ProviderDef[] = [
     id: "cognition",
     name: "Cognition (Devin)",
     description:
-      "Devin agentic sessions powered by GLM-5.2 High. Unlike other providers, Devin runs autonomously — it can use shell, files, web search, and spawn sub-agents to complete complex multi-step tasks. Paste your Devin API key (cog_...) and organization ID (org-...) from settings.devin.ai.",
+      "Unlike every other provider here, Devin runs autonomously — shell, files, web search and sub-agents — and bills per agent-compute-unit rather than per token. Paste your Devin API key (cog_...) and organization ID (org-...) from settings.devin.ai.",
     authMethod: "api_key",
     tier: "premium",
     // Devin uses a session API, not chat completions — but we set "openai" here
@@ -409,11 +419,24 @@ export function availableModels(connectedProviderIds: string[]): Array<ProviderM
 /**
  * Returns provider summaries for the frontend connection UI.
  */
+/**
+ * Human blurb plus the models actually configured, so the UI cannot advertise
+ * a model the provider no longer offers.
+ *
+ * Lists at most three: the connection card has room for a line, not a catalogue.
+ */
+function describeProvider(p: ProviderDef): string {
+  if (p.models.length === 0) return p.description;
+  const headline = p.models.slice(0, 3).map((m) => m.name).join(", ");
+  const more = p.models.length > 3 ? ` and ${p.models.length - 3} more` : "";
+  return `${headline}${more}. ${p.description}`;
+}
+
 export function providerSummaries() {
   return PROVIDERS.map((p) => ({
     id: p.id,
     name: p.name,
-    description: p.description,
+    description: describeProvider(p),
     authMethod: p.authMethod,
     freeTier: p.freeTier ?? false,
     tier: p.tier,

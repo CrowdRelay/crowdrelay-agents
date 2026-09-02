@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PROVIDERS } from "../src/providers/registry.ts";
+import { PROVIDERS, providerSummaries } from "../src/providers/registry.ts";
 
 // ---------------------------------------------------------------------------
 // Model-id hygiene.
@@ -148,3 +148,35 @@ test(
     );
   },
 );
+
+test("a provider blurb never hardcodes model names", () => {
+  // The connection screen advertised "Claude Opus 4.1, Sonnet 4" long after the
+  // registry moved to Opus 5, and offered "Llama 3.3 70B, Mixtral" from a
+  // provider that serves neither. Hand-written lists go stale silently because
+  // nothing links them to `models`.
+  //
+  // `providerSummaries` composes the real model names onto the blurb, so the
+  // blurb itself must stay free of them.
+  const modelWords = /\b(GPT-4|GPT-4o|o1|o3|Claude|Opus|Sonnet|Haiku|Gemini|Llama|Mixtral|Grok|GLM|Qwen|Nemotron)\b/;
+  for (const provider of PROVIDERS) {
+    assert.doesNotMatch(
+      provider.description,
+      modelWords,
+      `${provider.id} names models in its blurb; providerSummaries() already ` +
+        `prepends the real ones, so this copy can only ever contradict them`,
+    );
+  }
+});
+
+test("the shipped description lists models this provider actually has", () => {
+  for (const summary of providerSummaries()) {
+    const provider = PROVIDERS.find((p) => p.id === summary.id);
+    assert.ok(provider, `unknown provider ${summary.id}`);
+    if (provider.models.length === 0) continue;
+    assert.ok(
+      summary.description.startsWith(provider.models[0].name),
+      `${summary.id} description should open with its first real model, got: ` +
+        summary.description.slice(0, 60),
+    );
+  }
+});
