@@ -18,6 +18,10 @@
 #   GROQ_API_KEY — platform-level Groq fallback
 #   REDDIT_SCRAPER_QUERIES — comma-separated subreddit search queries for the scraper ticker
 #   REDDIT_SCRAPER_ENABLED — "false" to disable the Reddit scrape ticker (default: true)
+#   REDDIT_PAGE_TIMEOUT_MS — navigation budget in ms (default: 300000). Raise it
+#     when the host is slow; a login that times out burns all three attempts and
+#     marks working credentials invalid, so this is worth being generous with.
+#   REDDIT_SESSION_PROBE_TIMEOUT_MS — session-probe budget in ms (default: 120000)
 
 services:
   agent-service:
@@ -31,6 +35,8 @@ services:
       REDDIT_BROWSER_PROFILE_DIR: "/data/reddit-browser-profile"
       REDDIT_SCRAPER_ENABLED: "${REDDIT_SCRAPER_ENABLED:-true}"
       REDDIT_SCRAPER_QUERIES: "${REDDIT_SCRAPER_QUERIES:-}"
+      REDDIT_PAGE_TIMEOUT_MS: "${REDDIT_PAGE_TIMEOUT_MS:-}"
+      REDDIT_SESSION_PROBE_TIMEOUT_MS: "${REDDIT_SESSION_PROBE_TIMEOUT_MS:-}"
       OPENCODE_ZEN_TOKEN: "${OPENCODE_ZEN_TOKEN:-}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GROQ_API_KEY: "${GROQ_API_KEY:-}"

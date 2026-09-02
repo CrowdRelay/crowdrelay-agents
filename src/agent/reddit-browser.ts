@@ -34,6 +34,11 @@ import {
   normalizeSubredditName,
   type ScrapeResultRow,
 } from "./reddit-scrape-parse.js";
+import {
+  PAGE_TIMEOUT_MS,
+  SESSION_PROBE_TIMEOUT_MS,
+  ELEMENT_TIMEOUT_MS,
+} from "./reddit-timeouts.js";
 
 export {
   parseSubredditListing,
@@ -53,24 +58,6 @@ const USER_AGENT =
 const CREDENTIALS_PROVIDER = "reddit-browser";
 
 const MAX_LOGIN_ATTEMPTS = 3;
-
-/**
- * Navigation budget for Reddit pages.
- *
- * 30s was too tight on the production host and every login failed on
- * `page.goto: Timeout 30000ms exceeded` — which then burned all three attempts
- * and marked working credentials invalid, so the failure looked like a bad
- * password rather than a slow machine.
- *
- * Measured on that host: Chromium launch 10.3s, example.com 7.8s,
- * reddit.com/login 13.3s, old.reddit.com/login 18.2s — and the first attempt
- * pays the cold-launch cost on top. 90s leaves room for the slowest observed
- * page without hanging a request indefinitely.
- */
-const PAGE_TIMEOUT_MS = 90_000;
-
-/** Session probes are cheap pages, but the same host slowness applies. */
-const SESSION_PROBE_TIMEOUT_MS = 45_000;
 
 /** Politeness gap between subreddit-search queries (browser looks human). */
 const SCRAPE_QUERY_SPACING_MS = 2_000;
@@ -483,7 +470,7 @@ export class RedditBrowser {
     // elements with shadow DOM. Playwright pierces open shadow roots,
     // so input[name="username"] works directly.
     const userField = page.locator('input[name="username"]').first();
-    await userField.waitFor({ timeout: 15_000 });
+    await userField.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     await userField.fill(username);
     await page.locator('input[name="password"]').first().fill(password);
     await page
@@ -519,14 +506,14 @@ export class RedditBrowser {
       'iframe[src*="accounts.google.com/gsi"]',
     ).first();
     const googleButton = gsiFrame.locator('[role="button"]').first();
-    await googleButton.waitFor({ timeout: 15_000 });
+    await googleButton.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     await googleButton.click();
 
     // Google may open a popup or navigate the page to accounts.google.com.
     // Handle both: wait for either a popup or a URL change.
     const popupPromise = page.waitForEvent("popup", { timeout: 5_000 })
       .catch(() => null);
-    await page.waitForURL(/accounts\.google\.com/, { timeout: 15_000 })
+    await page.waitForURL(/accounts\.google\.com/, { timeout: ELEMENT_TIMEOUT_MS })
       .catch(async () => {
         // No navigation — check if a popup opened.
       });
@@ -534,12 +521,12 @@ export class RedditBrowser {
     const googlePage = popup ?? page;
 
     const emailField = googlePage.locator('input[type="email"]').first();
-    await emailField.waitFor({ timeout: 15_000 });
+    await emailField.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     await emailField.fill(email);
     await googlePage.locator('#identifierNext, button:has-text("Next")').first().click();
 
     const passwordField = googlePage.locator('input[type="password"]:visible').first();
-    await passwordField.waitFor({ timeout: 15_000 });
+    await passwordField.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     await passwordField.fill(password);
     await googlePage.locator('#passwordNext, button:has-text("Next")').first().click();
 
@@ -850,7 +837,7 @@ export class RedditBrowser {
         'textarea[name="title"], textarea[placeholder*="itle"], div[contenteditable="true"][aria-label*="itle"], input[name="title"]',
       )
       .first();
-    await titleField.waitFor({ timeout: 20_000 });
+    await titleField.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     await titleField.fill(title);
 
     // New Reddit's body editor is a contenteditable textbox (markdown or
@@ -860,7 +847,7 @@ export class RedditBrowser {
         'div[contenteditable="true"][role="textbox"], textarea[name="text"], textarea[placeholder*="ext" i]',
       )
       .first();
-    await editor.waitFor({ timeout: 20_000 });
+    await editor.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
     const isContenteditable = await editor.evaluate((el) =>
       (el as { isContentEditable?: boolean }).isContentEditable === true,
     );
