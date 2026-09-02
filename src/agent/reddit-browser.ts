@@ -24,7 +24,7 @@
  * telling the operator to provide an app password or disable 2FA.
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { DbPool } from "../store/db.js";
@@ -205,6 +205,38 @@ async function upsertScrapeResult(
   );
 }
 
+
+/**
+ * Removes the singleton lock a previous Chromium left in the profile.
+ *
+ * The profile lives on a persistent volume and the container does not. When a
+ * container is replaced — every deploy — Chromium never gets to close, and its
+ * `SingletonLock` survives pointing at a hostname and pid that no longer
+ * exist. The next launch then refuses the profile outright:
+ *
+ *   The profile appears to be in use by another Chromium process (99867)
+ *   on another computer (0159b55e1e9f).
+ *
+ * Playwright surfaces that as "Target page, context or browser has been
+ * closed", which describes the symptom and hides the cause. Nothing recovers
+ * on its own, so Reddit stayed unreadable across every deploy after the first.
+ *
+ * Safe to do unconditionally here: this service runs one Chromium against one
+ * profile, and `closeContext()` has already run, so any lock still present
+ * belongs to a process that is gone. Chromium recreates all three entries on
+ * launch.
+ */
+function releaseStaleProfileLock(profileDir: string): void {
+  for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+    try {
+      rmSync(join(profileDir, name), { force: true });
+    } catch {
+      // A lock we cannot remove is not worth failing the launch over —
+      // Chromium will report it far more precisely than we could here.
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // RedditBrowser
 // ---------------------------------------------------------------------------
@@ -328,6 +360,7 @@ export class RedditBrowser {
 
     await this.closeContext();
     mkdirSync(this.profileDir, { recursive: true });
+    releaseStaleProfileLock(this.profileDir);
     // Reddit blocks headless Chromium (403 on .json, empty search results).
     // Run headed inside Xvfb when DISPLAY is set (container); fall back to
     // headless only when no display is available (local dev without Xvfb).
