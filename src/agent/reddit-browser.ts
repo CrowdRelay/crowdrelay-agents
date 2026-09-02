@@ -54,9 +54,23 @@ const CREDENTIALS_PROVIDER = "reddit-browser";
 
 const MAX_LOGIN_ATTEMPTS = 3;
 
-const PAGE_TIMEOUT_MS = 30_000;
+/**
+ * Navigation budget for Reddit pages.
+ *
+ * 30s was too tight on the production host and every login failed on
+ * `page.goto: Timeout 30000ms exceeded` — which then burned all three attempts
+ * and marked working credentials invalid, so the failure looked like a bad
+ * password rather than a slow machine.
+ *
+ * Measured on that host: Chromium launch 10.3s, example.com 7.8s,
+ * reddit.com/login 13.3s, old.reddit.com/login 18.2s — and the first attempt
+ * pays the cold-launch cost on top. 90s leaves room for the slowest observed
+ * page without hanging a request indefinitely.
+ */
+const PAGE_TIMEOUT_MS = 90_000;
 
-const SESSION_PROBE_TIMEOUT_MS = 20_000;
+/** Session probes are cheap pages, but the same host slowness applies. */
+const SESSION_PROBE_TIMEOUT_MS = 45_000;
 
 /** Politeness gap between subreddit-search queries (browser looks human). */
 const SCRAPE_QUERY_SPACING_MS = 2_000;
