@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import { PROVIDERS, providerSummaries } from "../src/providers/registry.ts";
 
 // ---------------------------------------------------------------------------
@@ -178,5 +179,66 @@ test("the shipped description lists models this provider actually has", () => {
       `${summary.id} description should open with its first real model, got: ` +
         summary.description.slice(0, 60),
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Template model hygiene.
+//
+// The registry's own ids are checked above. A template's `recommendedModels`
+// are the ids a dispatch actually asks for, and nothing checked them: the
+// telegram and discord templates shipped naming `claude-sonnet-4-5`,
+// `claude-3-5-sonnet` and `gemini-2.5-flash`, none of which the registry
+// offers. Production has the receipt for what that costs — a press-pitch run
+// failed with
+//
+//   Anthropic API 404: model: claude-opus-4-1-20250805
+//
+// which is the same mistake one generation earlier. A recommended model that
+// no provider serves is a run that fails at dispatch for a reason nobody sees
+// until they read the task row.
+//
+// The template files are read as text rather than imported: `catalog.ts`
+// re-exports them through `.js` specifiers, which the test runner's
+// type-stripping loader cannot resolve. The list is a literal in every
+// template, so reading it is exact.
+// ---------------------------------------------------------------------------
+
+function templateRecommendations(): Array<{ template: string; models: string[] }> {
+  const dir = new URL("../src/templates/", import.meta.url);
+  const files = readdirSync(dir)
+    .filter(name => name.endsWith(".ts") && name !== "catalog.ts");
+  return files.map(name => {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    const match = source.match(/recommendedModels:\s*\[([^\]]*)\]/);
+    const models = match
+      ? [...match[1].matchAll(/"([^"]+)"/g)].map(m => m[1])
+      : [];
+    return { template: name.replace(/\.ts$/, ""), models };
+  });
+}
+
+test("every template recommends models the registry actually serves", () => {
+  const known = new Set(
+    PROVIDERS.flatMap(provider => provider.models.map(model => model.id)),
+  );
+  const unknown: string[] = [];
+  for (const { template, models } of templateRecommendations()) {
+    for (const model of models) {
+      if (!known.has(model)) unknown.push(`${template} -> ${model}`);
+    }
+  }
+  assert.deepEqual(
+    unknown,
+    [],
+    `templates recommend models no provider serves:\n  ${unknown.join("\n  ")}`,
+  );
+});
+
+test("every template recommends at least one model", () => {
+  // A template with an empty list falls through to whatever the caller
+  // defaults to, which is how a run ends up on a model nobody chose for it.
+  for (const { template, models } of templateRecommendations()) {
+    assert.ok(models.length > 0, `${template} recommends no model`);
   }
 });

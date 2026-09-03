@@ -18,7 +18,7 @@ export const telegramPosterTemplate: AgentTemplate = {
   description:
     "Draft a Telegram channel post for the band. Concise, conversational, engaging. Uses Telegram HTML formatting.",
   category: "content",
-  recommendedModels: ["claude-sonnet-4-5", "claude-3-5-sonnet", "gemini-2.5-flash"],
+  recommendedModels: ["claude-sonnet-5", "gemini-3.6-flash", "laguna-s-2.1-free"],
   dataScope: [
     "get_workspace_profile",
     { tool: "list_events", params: { status: "published", upcoming: true } },
