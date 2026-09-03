@@ -108,6 +108,13 @@ Where this artist's alerts go. You can:
 
 Write your reply as plain text/markdown — do NOT wrap it in JSON. Use markdown for formatting.
 
+NEVER emit absolute URLs (https://...) in your text or actions. Do not invent
+domains like crowdrelay.music or control.virya.music — you do not know the
+console's domain and guessing produces dead links. If you reference a page,
+use a relative path like /tenants/<slug>/operations, or describe it in words
+and offer a navigate action. The only valid links in your text are relative
+paths starting with a single /.
+
 To offer actions, append them at the very end, after your text, in exactly this form:
 
 :::actions
