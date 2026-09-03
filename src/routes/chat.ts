@@ -44,6 +44,87 @@ const chatSchema = z.object({
   pageContext: z.string().max(500).optional(),
 });
 
+/**
+ * The free Zen models, in the order chat tries them.
+ *
+ * Chat named `laguna-s-2.1-free` in two places with no fallback and no retry,
+ * so one upstream hiccup ended the conversation in the provider's own words:
+ *
+ *   model error: 503 {"error":{"type":"server_error","message":"Error from
+ *   provider (Console): Upstream request failed: Endpoint is unavailable."}}
+ *
+ * These are shared free endpoints on a 100 requests/day pool. Being briefly
+ * unavailable is their normal behaviour, not an exception, so a single-model
+ * chat was always going to fail after a few prompts. Same three models
+ * `PROVIDERS` publishes for `opencode-zen`, ordered so a long conversation
+ * degrades to a smaller context window rather than to nothing.
+ */
+const CHAT_MODELS = [
+  "laguna-s-2.1-free",
+  "nemotron-3.5-lightning-free",
+  "mimo-v2.5-free",
+] as const;
+
+/** Upstream states worth trying a different model for. */
+function isTransientUpstream(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+/**
+ * Calls the Zen endpoint, walking `CHAT_MODELS` until one answers.
+ *
+ * Only transient failures advance to the next model. A 400 means the request
+ * itself is wrong and every model will say the same, so it returns immediately
+ * rather than spending three of a shared daily quota to hear it twice more.
+ */
+async function fetchWithModelFallback(
+  endpoint: string,
+  token: string | null | undefined,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<{ response: Response; model: string } | { failure: string }> {
+  let lastFailure = "no free model was reachable";
+  for (const model of CHAT_MODELS) {
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ ...body, model }),
+        signal,
+      });
+    } catch (error) {
+      // An aborted signal is the client leaving or the timeout firing. Both
+      // mean stop, not try the next model.
+      if (signal.aborted) throw error;
+      lastFailure = `${model} did not respond`;
+      continue;
+    }
+    if (response.ok) return { response, model };
+    const detail = await response.text().catch(() => "");
+    if (!isTransientUpstream(response.status)) {
+      return {
+        failure: `${model} refused the request (HTTP ${response.status}) ${detail.slice(0, 160)}`.trim(),
+      };
+    }
+    lastFailure = `${model} was unavailable (HTTP ${response.status})`;
+  }
+  return { failure: lastFailure };
+}
+
+/**
+ * What the operator reads when every free model is down.
+ *
+ * The provider's raw JSON was being passed straight through to the chat
+ * bubble. It named a console the operator has no access to and gave them
+ * nothing to do about it.
+ */
+const ALL_MODELS_DOWN =
+  "The free model endpoints are all busy right now. This is the shared free tier, so it usually clears within a minute — try again, or connect your own provider key on the AI Integrations page to get a dedicated endpoint.";
+
 const ACTIONS_DELIMITER = ":::actions";
 
 /** Parse the :::actions block from completed text. Returns [replyText, actions]. */
@@ -104,25 +185,17 @@ export function registerChatRoutes(
     }
 
     try {
-      const response = await fetch(zenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(opts.zenToken ? { Authorization: `Bearer ${opts.zenToken}` } : {}),
-        },
-        body: JSON.stringify({
-          model: "laguna-s-2.1-free",
-          messages,
-          max_tokens: 2048,
-          temperature: 0.7,
-        }),
-        signal: AbortSignal.timeout(60_000),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "unknown error");
-        return reply.code(502).send({ error: `model error: ${response.status} ${errorText.slice(0, 200)}` });
+      const attempt = await fetchWithModelFallback(
+        zenEndpoint,
+        opts.zenToken,
+        { messages, max_tokens: 2048, temperature: 0.7 },
+        AbortSignal.timeout(60_000),
+      );
+      if ("failure" in attempt) {
+        request.log.warn({ failure: attempt.failure }, "chat: no free model answered");
+        return reply.code(503).send({ error: ALL_MODELS_DOWN });
       }
+      const { response } = attempt;
 
       const data = await response.json() as {
         choices?: Array<{ message: { content: string | null } }>;
@@ -223,28 +296,19 @@ export function registerChatRoutes(
     reply.raw.on("close", onClientClose);
 
     try {
-      const response = await fetch(zenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(opts.zenToken ? { Authorization: `Bearer ${opts.zenToken}` } : {}),
-        },
-        body: JSON.stringify({
-          model: "laguna-s-2.1-free",
-          messages,
-          max_tokens: 2048,
-          temperature: 0.7,
-          stream: true,
-        }),
-        signal: AbortSignal.any([AbortSignal.timeout(90_000), disconnected.signal]),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "unknown error");
-        send({ type: "error", error: `model error: ${response.status} ${errorText.slice(0, 200)}` });
+      const attempt = await fetchWithModelFallback(
+        zenEndpoint,
+        opts.zenToken,
+        { messages, max_tokens: 2048, temperature: 0.7, stream: true },
+        AbortSignal.any([AbortSignal.timeout(90_000), disconnected.signal]),
+      );
+      if ("failure" in attempt) {
+        request.log.warn({ failure: attempt.failure }, "chat: no free model answered");
+        send({ type: "error", error: ALL_MODELS_DOWN });
         reply.raw.end();
         return;
       }
+      const { response } = attempt;
 
       const reader = response.body?.getReader();
       if (!reader) {
