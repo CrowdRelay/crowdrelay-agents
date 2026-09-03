@@ -26,6 +26,11 @@ import {
   storeRedditCredentials,
   type RedditCredentials,
 } from "../agent/reddit-browser.js";
+import {
+  RedditApiError,
+  getRedditApiClient,
+  storeRedditApiCredentials,
+} from "../agent/reddit-api.js";
 
 // Reddit usernames are 3-20 chars of [A-Za-z0-9_-]. Validating the shape here
 // keeps a typo from becoming a login attempt (and a failed-credential mark)
@@ -51,6 +56,14 @@ const postSchema = z.object({
 
 const metricsSchema = z.object({
   post_id: z.string().trim().min(1).max(50),
+});
+
+// A script app's id is short and its secret longer; both are opaque strings
+// from Reddit's app page. Bounding them here keeps a pasted paragraph out of
+// the encrypted blob.
+const apiCredentialsSchema = z.object({
+  client_id: z.string().trim().min(5).max(64),
+  client_secret: z.string().trim().min(10).max(128),
 });
 
 // Subreddit names are 3-21 chars of [A-Za-z0-9_]. Same validation as
@@ -99,7 +112,7 @@ export function registerRedditRoutes(
   }
 
   function browserErrorReply(reply: { code(code: number): { send(body: unknown): unknown } }, error: unknown) {
-    if (error instanceof RedditBrowserError) {
+    if (error instanceof RedditBrowserError || error instanceof RedditApiError) {
       return reply.code(error.statusCode).send({ error: error.message });
     }
     const message = error instanceof Error ? error.message : "unknown error";
@@ -237,6 +250,23 @@ export function registerRedditRoutes(
     }
 
     try {
+      // Posting is the action the whole growth loop exists to take, so it
+      // takes the route that does not depend on a browser session surviving
+      // Reddit's opinion of this IP.
+      const api = getRedditApiClient(
+        opts.pool,
+        opts.encryptionKey,
+        opts.previousEncryptionKey,
+      );
+      if (await api.isConfigured(workspaceId as string)) {
+        const result = await api.submitSelfPost(
+          workspaceId as string,
+          parsed.data.subreddit,
+          parsed.data.title,
+          parsed.data.body,
+        );
+        return reply.send(result);
+      }
       const result = await getRedditBrowser(opts.pool).submitPost(
         workspaceId as string,
         parsed.data.subreddit,
@@ -266,6 +296,15 @@ export function registerRedditRoutes(
     }
 
     try {
+      const api = getRedditApiClient(
+        opts.pool,
+        opts.encryptionKey,
+        opts.previousEncryptionKey,
+      );
+      if (await api.isConfigured(workspaceId as string)) {
+        await api.joinSubreddit(workspaceId as string, parsed.data.subreddit);
+        return reply.send({ subreddit: parsed.data.subreddit, joined: true });
+      }
       const result = await getRedditBrowser(opts.pool).joinSubreddit(
         workspaceId as string,
         parsed.data.subreddit,
@@ -292,6 +331,32 @@ export function registerRedditRoutes(
     }
 
     try {
+      const api = getRedditApiClient(
+        opts.pool,
+        opts.encryptionKey,
+        opts.previousEncryptionKey,
+      );
+      if (await api.isConfigured(workspaceId as string)) {
+        const post = await api.postMetrics(workspaceId as string, parsed.data.post_id);
+        if (!post) {
+          return reply.code(404).send({ error: "reddit has no post with that id" });
+        }
+        // Same shape the browser path returns: the caller records these
+        // against `community_post_metrics` and must not have to know which
+        // route read them.
+        return reply.send({
+          score: typeof post.score === "number" ? post.score : 0,
+          upvotes:
+            typeof post.ups === "number"
+              ? post.ups
+              : typeof post.score === "number"
+                ? post.score
+                : 0,
+          num_comments: typeof post.num_comments === "number" ? post.num_comments : 0,
+          upvote_ratio:
+            typeof post.upvote_ratio === "number" ? post.upvote_ratio : null,
+        });
+      }
       const metrics = await getRedditBrowser(opts.pool).getPostMetrics(
         workspaceId as string,
         parsed.data.post_id,
@@ -315,6 +380,32 @@ export function registerRedditRoutes(
    * votes, no comments. Returns what an observation needs: how big the
    * community is, how many are there now, and what is actually being posted.
    */
+  /**
+   * POST /reddit/api-credentials — store the script app's id and secret.
+   *
+   * Create the app at https://www.reddit.com/prefs/apps as type **script**,
+   * under the account that will post. The id is the string under the app name;
+   * the secret is labelled "secret". Neither is echoed back.
+   */
+  app.post("/reddit/api-credentials", async (request, reply) => {
+    const { workspaceId, errorReply } = requireWorkspaceId(request);
+    if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
+
+    const parsed = apiCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "client_id and client_secret are required",
+      });
+    }
+    await storeRedditApiCredentials(
+      opts.pool,
+      workspaceId as string,
+      parsed.data,
+      opts.encryptionKey,
+    );
+    return reply.send({ stored: true, provider: "reddit-api" });
+  });
+
   app.post("/reddit/observe", async (request, reply) => {
     const { workspaceId, errorReply } = requireWorkspaceId(request);
     if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
@@ -329,20 +420,37 @@ export function registerRedditRoutes(
     const limit = parsed.data.limit ?? 25;
 
     try {
-      const browser = getRedditBrowser(opts.pool);
-      const about = (await browser.getJson(
-        workspaceId as string,
-        `/r/${subreddit}/about.json`,
-      )) as { data?: Record<string, unknown> } | null;
-      const listing = (await browser.getJson(
-        workspaceId as string,
-        `/r/${subreddit}/hot.json?limit=${limit}`,
-      )) as { data?: { children?: Array<{ data?: Record<string, unknown> }> } } | null;
-
-      const info = about?.data ?? {};
-      const posts = (listing?.data?.children ?? [])
-        .map((child) => child.data ?? {})
-        .filter((post) => typeof post.title === "string");
+      // The API first, the browser only if no script app is configured. Both
+      // return the same shape because both are reading the same Reddit
+      // objects; the API just does it without a Chromium that can be shown a
+      // CAPTCHA.
+      const api = getRedditApiClient(
+        opts.pool,
+        opts.encryptionKey,
+        opts.previousEncryptionKey,
+      );
+      let info: Record<string, unknown>;
+      let posts: Array<Record<string, unknown>>;
+      if (await api.isConfigured(workspaceId as string)) {
+        info = await api.subredditAbout(workspaceId as string, subreddit);
+        posts = (await api.subredditHot(workspaceId as string, subreddit, limit)).filter(
+          (post) => typeof post.title === "string",
+        );
+      } else {
+        const browser = getRedditBrowser(opts.pool);
+        const about = (await browser.getJson(
+          workspaceId as string,
+          `/r/${subreddit}/about.json`,
+        )) as { data?: Record<string, unknown> } | null;
+        const listing = (await browser.getJson(
+          workspaceId as string,
+          `/r/${subreddit}/hot.json?limit=${limit}`,
+        )) as { data?: { children?: Array<{ data?: Record<string, unknown> }> } } | null;
+        info = about?.data ?? {};
+        posts = (listing?.data?.children ?? [])
+          .map((child) => child.data ?? {})
+          .filter((post) => typeof post.title === "string");
+      }
 
       // `subscribers` is community size — reach, never audience. It is
       // reported as an observation of the place, not as followers of the

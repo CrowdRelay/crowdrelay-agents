@@ -59,6 +59,16 @@ const CREDENTIALS_PROVIDER = "reddit-browser";
 
 const MAX_LOGIN_ATTEMPTS = 3;
 
+/**
+ * How long a credential rests after a retryable login failure.
+ *
+ * Long enough that a challenge triggered by request volume has expired and
+ * short enough that a transient block does not cost a day of posting. Three
+ * login attempts per window is also well clear of anything Reddit would read
+ * as credential stuffing.
+ */
+const LOGIN_COOLDOWN_HOURS = 6;
+
 /** Politeness gap between subreddit-search queries (browser looks human). */
 const SCRAPE_QUERY_SPACING_MS = 2_000;
 
@@ -80,6 +90,42 @@ export class RedditBrowserError extends Error {
 
 function is2faChallenge(message: string): boolean {
   return /two-factor|2fa|verify it's you|unusual activity|couldn't sign you in/i.test(message);
+}
+
+/**
+ * Reads the login page to say why it did not advance.
+ *
+ * Returns a message beginning with `PASSWORD_REJECTED` only when Reddit
+ * states the credentials are wrong. Everything else — a challenge, a rate
+ * limit, a page that rendered nothing useful — is reported as retryable,
+ * because the caller latches a permanent failure and the cost of guessing
+ * "wrong password" is a Reddit that stays dead until a human intervenes.
+ */
+async function describeStuckLogin(page: Page): Promise<string> {
+  const wrongPassword =
+    /incorrect username or password|invalid username or password|wrong password/i;
+  const challenge =
+    /captcha|are you a robot|verify (you|it's you)|unusual|too many|try again later|rate ?limit|blocked/i;
+  let text = "";
+  try {
+    text = (await page.locator("body").innerText({ timeout: 3_000 })).slice(0, 4_000);
+  } catch {
+    // The page would not even yield text. That is not evidence of a bad
+    // password, so it stays retryable.
+    return "reddit login stayed on the login page and the page could not be read — retryable";
+  }
+  if (wrongPassword.test(text)) {
+    return "PASSWORD_REJECTED: reddit says the username or password is incorrect";
+  }
+  if (challenge.test(text)) {
+    return "reddit login stayed on the login page behind a challenge or rate limit — retryable";
+  }
+  return "reddit login stayed on the login page with no stated reason — retryable";
+}
+
+/** Whether a login failure means the stored password is definitively wrong. */
+function isPasswordRejected(message: string): boolean {
+  return message.startsWith("PASSWORD_REJECTED");
 }
 
 // ---------------------------------------------------------------------------
@@ -130,8 +176,19 @@ export async function getRedditCredentials(
 ): Promise<RedditCredentials | null> {
   const { rows } = await pool.query(
     `SELECT encrypted_value FROM agent_service_credentials
-     WHERE workspace_id = $1 AND provider = $2 AND status = 'active'`,
-    [workspaceId, CREDENTIALS_PROVIDER],
+     WHERE workspace_id = $1 AND provider = $2
+       AND (
+         status = 'active'
+         -- A credential cooling off after a challenge is not a broken
+         -- credential, it is one we agreed not to hammer. Once the window has
+         -- passed it is eligible again with no human in the loop, which is
+         -- the difference between Reddit recovering by itself and Reddit
+         -- staying dead until somebody reads a log.
+         OR (status = 'cooldown'
+             AND (last_validated_at IS NULL
+                  OR last_validated_at < now() - ($3 || ' hours')::interval))
+       )`,
+    [workspaceId, CREDENTIALS_PROVIDER, String(LOGIN_COOLDOWN_HOURS)],
   );
   const raw = rows[0]?.encrypted_value;
   if (typeof raw !== "string") return null;
@@ -143,17 +200,51 @@ export async function getRedditCredentials(
   }
 }
 
-/** After MAX_LOGIN_ATTEMPTS failed logins the credentials are marked invalid. */
+/**
+ * Clears a previous failure after a login that worked.
+ *
+ * Without this a credential that failed once and then recovered stays in
+ * `cooldown` forever, re-serving the same six-hour wait after every future
+ * failure and reporting a stale error to anyone reading the row. A working
+ * login is the only evidence that matters, so it overwrites the record of
+ * the one that did not.
+ */
+async function markRedditCredentialsValid(
+  pool: DbPool,
+  workspaceId: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE agent_service_credentials
+     SET status = 'active', last_validation_error = NULL, last_validated_at = now()
+     WHERE workspace_id = $1 AND provider = $2 AND status <> 'active'`,
+    [workspaceId, CREDENTIALS_PROVIDER],
+  );
+}
+
+/**
+ * Records a failed login, terminal or retryable.
+ *
+ * `invalid` means a human has to supply a different password; nothing will
+ * retry on its own. `cooldown` means the attempt failed for a reason another
+ * attempt could survive — a challenge, a rate limit, a page that never
+ * rendered — and the loader picks the credential up again once
+ * [`LOGIN_COOLDOWN_HOURS`] have passed.
+ *
+ * The distinction is the whole point. Every failure used to land on
+ * `invalid`, so one CAPTCHA shown to a container IP took Reddit off the air
+ * until somebody re-typed a password that had never been wrong.
+ */
 async function markRedditCredentialsFailed(
   pool: DbPool,
   workspaceId: string,
   reason: string,
 ): Promise<void> {
+  const status = isPasswordRejected(reason) ? "invalid" : "cooldown";
   await pool.query(
     `UPDATE agent_service_credentials
-     SET status = 'invalid', last_validation_error = $3
+     SET status = $4, last_validation_error = $3, last_validated_at = now()
      WHERE workspace_id = $1 AND provider = $2`,
-    [workspaceId, CREDENTIALS_PROVIDER, reason],
+    [workspaceId, CREDENTIALS_PROVIDER, reason, status],
   );
 }
 
@@ -398,6 +489,7 @@ export class RedditBrowser {
       if (await this.hasValidSession(page, credentials.reddit_username)) {
         this.authed = true;
         this.sessionWorkspaceId = workspaceId;
+        await markRedditCredentialsValid(this.pool, workspaceId);
         return;
       }
 
@@ -425,6 +517,7 @@ export class RedditBrowser {
           if (await this.hasValidSession(page, credentials.reddit_username)) {
             this.authed = true;
             this.sessionWorkspaceId = workspaceId;
+            await markRedditCredentialsValid(this.pool, workspaceId);
             return;
           }
           lastError = new RedditBrowserError("login completed but the session is not valid");
@@ -571,12 +664,19 @@ export class RedditBrowser {
     // there instead of racing past it, and the error says which happened.
     await page
       .waitForURL((url) => !/\/login/.test(url.pathname), { timeout: PAGE_TIMEOUT_MS })
-      .catch(() => {
-        throw new RedditBrowserError(
-          "reddit login did not leave the login page — the password was rejected " +
-            "or a challenge is being shown",
-          400,
-        );
+      .catch(async () => {
+        // Still on /login. Two very different things look identical from
+        // here, and collapsing them cost a month of Reddit: a rejected
+        // password needs a human with the right one, a challenge needs
+        // nothing but another attempt later. The old message said "the
+        // password was rejected or a challenge is being shown" and the
+        // caller marked the credential permanently invalid either way, so a
+        // datacenter IP getting shown a CAPTCHA once killed Reddit until
+        // somebody noticed and re-typed a password that had never been
+        // wrong.
+        //
+        // Reddit says which it is on the page. Read it.
+        throw new RedditBrowserError(await describeStuckLogin(page), 400);
       });
   }
 

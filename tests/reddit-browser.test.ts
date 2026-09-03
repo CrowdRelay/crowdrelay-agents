@@ -161,14 +161,48 @@ test("the post-login wait does not match the login page itself", () => {
   );
 });
 
-test("a login that never leaves /login is reported as a rejection", () => {
+test("a login that never leaves /login says which failure it was", () => {
   // Timing out silently would put us back where we started: an invalid
   // credential and no idea whether the password was wrong or the page hung.
+  // Saying "the password was rejected or a challenge is being shown" was only
+  // half a fix — the caller latched both onto `invalid`, so one CAPTCHA cost
+  // a month of Reddit. The page is read for which one it actually was.
   const source = readFileSync(
     new URL("../src/agent/reddit-browser.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /did not leave the login page/);
+  assert.match(source, /stayed on the login page/);
+  assert.match(source, /PASSWORD_REJECTED/);
+});
+
+test("only a stated wrong password latches the credential off", () => {
+  // A rejected password needs a human with the right one. A challenge needs
+  // nothing but another attempt later. Collapsing them is what made Reddit
+  // unrecoverable without manual intervention.
+  const source = readFileSync(
+    new URL("../src/agent/reddit-browser.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /isPasswordRejected\(reason\) \? "invalid" : "cooldown"/,
+    "a retryable failure must not be recorded as invalid",
+  );
+  assert.match(
+    source,
+    /status = 'cooldown'/,
+    "the loader must pick a cooled-off credential back up on its own",
+  );
+});
+
+test("a login that works clears an earlier failure", () => {
+  // Without this a recovered credential stays in cooldown forever, waiting
+  // out the window after every future failure and reporting a stale error.
+  const source = readFileSync(
+    new URL("../src/agent/reddit-browser.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /markRedditCredentialsValid/);
 });
 
 test("the session probe explains why it said no", () => {
