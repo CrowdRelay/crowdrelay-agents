@@ -53,6 +53,16 @@ const metricsSchema = z.object({
   post_id: z.string().trim().min(1).max(50),
 });
 
+// Subreddit names are 3-21 chars of [A-Za-z0-9_]. Same validation as
+// observeSchema — a malformed name must not become an authenticated
+// navigation to an arbitrary page.
+const joinSchema = z.object({
+  subreddit: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_]{2,21}$/, "subreddit must be 2-21 chars of A-Za-z0-9_"),
+});
+
 // Subreddit names are 3-21 chars of [A-Za-z0-9_]. Bounding the shape here keeps
 // a malformed place URL from becoming an arbitrary authenticated navigation.
 const observeSchema = z.object({
@@ -232,6 +242,33 @@ export function registerRedditRoutes(
         parsed.data.subreddit,
         parsed.data.title,
         parsed.data.body,
+      );
+      return reply.send(result);
+    } catch (error) {
+      return browserErrorReply(reply, error);
+    }
+  });
+
+  /**
+   * POST /reddit/join — joins (subscribes to) a subreddit through the
+   * logged-in browser session. Body: { subreddit }.
+   * Returns { joined: true } on success.
+   */
+  app.post("/reddit/join", async (request, reply) => {
+    const { workspaceId, errorReply } = requireWorkspaceId(request);
+    if (errorReply) return reply.code(errorReply.statusCode).send({ error: errorReply.message });
+
+    const parsed = joinSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: parsed.error.issues[0]?.message ?? "subreddit is required",
+      });
+    }
+
+    try {
+      const result = await getRedditBrowser(opts.pool).joinSubreddit(
+        workspaceId as string,
+        parsed.data.subreddit,
       );
       return reply.send(result);
     } catch (error) {

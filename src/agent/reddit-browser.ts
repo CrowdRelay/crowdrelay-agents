@@ -986,6 +986,124 @@ export class RedditBrowser {
       upvote_ratio: typeof post.upvote_ratio === "number" ? post.upvote_ratio : null,
     };
   }
+
+  /**
+   * Joins (subscribes to) a subreddit via the browser session.
+   *
+   * Uses Reddit's same-origin `/api/subscribe` endpoint from inside the
+   * authenticated browser page, falling back to clicking the Join button
+   * on the subreddit page. The `skip_initial_defaults` parameter tells
+   * Reddit not to add the subreddit's default subscriptions to the account
+   * — we only want to join this one community.
+   *
+   * Returns `{ joined: true }` on success. Throws `RedditBrowserError` on
+   * any failure (rate limit, auth, network, Reddit rejection).
+   */
+  async joinSubreddit(
+    workspaceId: string,
+    subreddit: string,
+  ): Promise<{ joined: boolean }> {
+    const sr = normalizeSubredditName(subreddit);
+    if (!sr) {
+      throw new RedditBrowserError("subreddit name is required", 400);
+    }
+
+    const context = await this.ensureSession(workspaceId);
+    const page = await context.newPage();
+    try {
+      await page.goto(`${REDDIT_ORIGIN}/r/${sr}/`, {
+        waitUntil: "domcontentloaded",
+        timeout: PAGE_TIMEOUT_MS,
+      });
+
+      try {
+        return await this.joinViaApi(page, sr);
+      } catch (apiError) {
+        const message =
+          apiError instanceof Error ? apiError.message : String(apiError);
+        console.warn(
+          `[reddit-browser] /api/subscribe failed (${message}), trying the Join button`,
+        );
+        return await this.joinViaButton(page);
+      }
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  private async joinViaApi(
+    page: Page,
+    sr: string,
+  ): Promise<{ joined: boolean }> {
+    const result = await page.evaluate(
+      async ({ sr }) => {
+        const me = await fetch("/api/me.json", { credentials: "include" })
+          .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+          .catch(() => null);
+        const modhash: string | null =
+          (me as { data?: { modhash?: string } | null } | null)?.data?.modhash ??
+          null;
+
+        // Reddit's subscribe API: action "sub" subscribes, "unsub"
+        // unsubscribes. `skip_initial_defaults` avoids pulling in the
+        // subreddit's recommended defaults.
+        const params = new URLSearchParams({
+          action: "sub",
+          sr_name: sr,
+          skip_initial_defaults: "true",
+        });
+        const headers: Record<string, string> = {
+          "Content-Type": "application/x-www-form-urlencoded",
+        };
+        if (modhash) headers["X-Modhash"] = modhash;
+
+        const response = await fetch("/api/subscribe", {
+          method: "POST",
+          credentials: "include",
+          headers,
+          body: params.toString(),
+        });
+        let payload: unknown = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        return { status: response.status, payload };
+      },
+      { sr },
+    );
+
+    if (result.status === 429) {
+      throw new RedditBrowserError("reddit rate limited the subscribe", 429);
+    }
+    if (result.status !== 200) {
+      throw new RedditBrowserError(
+        `reddit /api/subscribe returned HTTP ${result.status}`,
+        502,
+      );
+    }
+    return { joined: true };
+  }
+
+  private async joinViaButton(page: Page): Promise<{ joined: boolean }> {
+    // Click the "Join" button on the subreddit page. New Reddit shows a
+    // button with text "Join" that becomes "Joined" after clicking.
+    const joinButton = page
+      .locator('button:has-text("Join")')
+      .first();
+    await joinButton.waitFor({ timeout: ELEMENT_TIMEOUT_MS });
+    await joinButton.click();
+
+    // Wait for the button text to change to "Joined" or disappear.
+    await page
+      .locator('button:has-text("Joined")')
+      .first()
+      .waitFor({ timeout: ELEMENT_TIMEOUT_MS })
+      .catch(() => {});
+
+    return { joined: true };
+  }
 }
 
 // ---------------------------------------------------------------------------

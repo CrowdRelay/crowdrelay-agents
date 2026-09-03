@@ -1,5 +1,7 @@
 import { pressPitchTemplate } from "./press-pitch.js";
 import { socialPostTemplate } from "./social-post.js";
+import { telegramPosterTemplate } from "./telegram-poster.js";
+import { discordPosterTemplate } from "./discord-poster.js";
 import { campaignAnalysisTemplate } from "./campaign-analysis.js";
 import { audienceResearchTemplate } from "./audience-research.js";
 import { growthStrategistTemplate } from "./growth-strategist.js";
@@ -41,6 +43,8 @@ export const TEMPLATES: AgentTemplate[] = [
   signalInviterTemplate,
   pressPitchTemplate,
   socialPostTemplate,
+  telegramPosterTemplate,
+  discordPosterTemplate,
   campaignAnalysisTemplate,
   audienceResearchTemplate,
 ];

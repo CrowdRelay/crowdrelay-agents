@@ -42,7 +42,7 @@ export const PressPitchItem = z.object({
 export const SocialPostItem = z
   .object({
     type: z.literal("social_post"),
-    platform: z.enum(["instagram", "facebook", "x", "reddit"]),
+    platform: z.enum(["instagram", "facebook", "x", "reddit", "telegram", "discord"]),
     text: z.string().min(1).max(2200),
     cta_url: z.string().max(500).optional(),
     suggested_at: isoDate.optional(),
@@ -211,7 +211,7 @@ export function parseOutcome(raw: string): StructuredParseResult {
 export function outputContractText(kind: OutcomeKind): string {
   const itemShapes: Record<OutcomeKind, string> = {
     press_pitch: `{"type":"press_pitch","subject":"...","body":"...","target_refs":["outreach target id"],"suggested_send_at":"YYYY-MM-DD","tone":"...","follow_ups":["..."]}`,
-    social_post: `{"type":"social_post","platform":"instagram|facebook|x|reddit","text":"...","cta_url":"...","suggested_at":"YYYY-MM-DD","target_id":"uuid (reddit only)","subreddit":"r/... (reddit only)","title":"... (reddit only)","body":"... (reddit only)","smart_link":"https://... (reddit only)"}`,
+    social_post: `{"type":"social_post","platform":"instagram|facebook|x|reddit|telegram|discord","text":"...","cta_url":"...","suggested_at":"YYYY-MM-DD","target_id":"uuid (reddit only)","subreddit":"r/... (reddit only)","title":"... (reddit only)","body":"... (reddit only)","smart_link":"https://... (reddit only)"}`,
     signal_push: `{"type":"signal_push","title":"...","body":"... (under 200 chars)","target_path":"/events/{id}","event_id":"uuid","segment":"segment name"}`,
     audience_segments: `{"type":"fan_segment","name":"...","description":"...","size_estimate":123,"criteria":{"source":["..."]}}`,
     outreach_targets: `{"type":"outreach_target","target_kind":"press|radio|playlist|media_patronage|endorsement|creator","display_name":"...","contact_domain":"example.com","why_fit":"...","evidence_urls":["https://..."]}`,
