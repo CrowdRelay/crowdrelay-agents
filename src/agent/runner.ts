@@ -713,11 +713,10 @@ async function resolveApiKey(
     return credentialCache.get(provider.id);
   }
 
-  // Free tier — no key needed
-  if (provider.authMethod === "none" || provider.freeTier) {
-    const result = provider.id === "opencode-zen" ? config.zenToken : null;
-    credentialCache?.set(provider.id, result);
-    return result;
+  // No-key providers — nothing to look up
+  if (provider.authMethod === "none") {
+    credentialCache?.set(provider.id, null);
+    return null;
   }
 
   if (connectedProviders.includes(provider.id)) {
@@ -747,6 +746,11 @@ async function resolveApiKey(
 
   // Platform-level env defaults. Return undefined (not null) when absent so
   // the chain skips this provider instead of attempting a keyless call.
+  if (provider.id === "opencode-zen") {
+    const result = config.zenToken ?? undefined;
+    credentialCache?.set(provider.id, result);
+    return result;
+  }
   if (provider.id === "google") {
     const result = config.fallbackGoogleKey ?? undefined;
     credentialCache?.set(provider.id, result);

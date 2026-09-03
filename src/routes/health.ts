@@ -46,7 +46,7 @@ export function registerHealthRoutes(
         name: m.name,
         context_window: m.contextWindow,
         best_for: m.bestFor,
-        requires_key: !p.freeTier,
+        requires_key: p.authMethod === "api_key",
         paid: m.paid,
       })),
     );

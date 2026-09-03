@@ -42,7 +42,7 @@ export const MODELS: ModelDef[] = PROVIDERS.flatMap((p) =>
       freeLimit: freeLimitForProvider(p.id),
       contextWindow: m.contextWindow,
       bestFor: m.bestFor,
-      requiresKey: !p.freeTier,
+      requiresKey: p.authMethod === "api_key",
     })),
 );
 

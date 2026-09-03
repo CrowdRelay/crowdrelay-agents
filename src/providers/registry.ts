@@ -160,6 +160,20 @@ async function validateXAI(key: string): Promise<{ valid: boolean; error?: strin
   }
 }
 
+async function validateZen(key: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const res = await fetch("https://opencode.ai/zen/v1/models", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { valid: true };
+    if (res.status === 401) return { valid: false, error: "Invalid API key" };
+    return { valid: false, error: `Zen returned ${res.status}` };
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : "Connection failed" };
+  }
+}
+
 async function validateZhipu(key: string): Promise<{ valid: boolean; error?: string }> {
   try {
     const baseUrl = process.env.ZHIPU_API_BASE_URL?.replace(/\/chat\/completions\/?$/, "") ?? "https://api.z.ai/api/paas/v4";
@@ -207,11 +221,13 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "opencode-zen",
     name: "OpenCode Zen (Free)",
-    description: "Free tier, no API key needed. 100 requests/day across all Zen models.",
-    authMethod: "none",
+    description:
+      "Free tier with an API key. 100 requests/day across all Zen models. Get a token from opencode.ai.",
+    authMethod: "api_key",
     protocol: "openai",
     freeTier: true,
     tier: "free",
+    validateApiKey: validateZen,
     models: [
       { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free (128K)", contextWindow: 128_000, bestFor: "General tasks, balanced reasoning", paid: false },
       { id: "mimo-v2.5-free", name: "MiMo v2.5 Free (32K)", contextWindow: 32_000, bestFor: "Quick tasks, short content", paid: false },

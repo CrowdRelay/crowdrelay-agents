@@ -207,7 +207,7 @@ export function registerUsageRoutes(
     }> = [];
     for (const provider of PROVIDERS) {
       const isConnected = connectedProviders.includes(provider.id);
-      const noAuthNeeded = provider.authMethod === 'none' || provider.freeTier;
+      const noAuthNeeded = provider.authMethod === 'none';
       for (const model of provider.models) {
         if (!model.paid || isConnected || noAuthNeeded) {
           availableModels.push({
