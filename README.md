@@ -8,9 +8,11 @@ The brain is the deterministic Autopilot in CrowdRelay. This service is the work
 
 Every task pulls live data from the CrowdRelay database — real event dates, real fan counts, real outreach targets — so the LLM writes about the actual situation, not a template. The service does two things:
 
-1. **LLM worker execution** — runs agent templates that produce press pitches, social posts, community engagement drafts, growth strategy analysis, Reddit subreddit scans, Signal invite drafts, and campaign analysis. Each task is scoped to a single workspace.
+1. **LLM worker execution** — runs 10 agent templates that produce press pitches, social posts, community engagement drafts, growth strategy analysis, Reddit subreddit scans, Signal invite drafts, campaign analysis, audience research, Discord posts, and Telegram posts. Each task is scoped to a single workspace.
 
 2. **Reddit authenticated scraping** — launches a headless browser, logs into Reddit via Google OAuth, extracts session cookies, and serves them to the CrowdRelay worker for authenticated API access. This bypasses Reddit's JavaScript bot-detection that blocks all unauthenticated access.
+
+3. **Chat widget** — a conversational interface proxied through the control plane that lets operators ask questions about tenant state and get answers grounded in live data.
 
 ## What it solves
 
@@ -18,14 +20,15 @@ LLMs are useful for drafting creative work, but they're useless without context.
 
 ## How it works
 
-- **Templates** declare what data to fetch and what kind of output to produce
+- **Templates** declare what data to fetch (`dataScope`) and what kind of output to produce (`outputKind`)
 - **Runner** builds context from the database, runs the model with a fallback chain (if the requested model fails, it cascades to free-tier models, then other connected providers)
 - **Verification gate** checks output before accepting it
+- **Budget gating** — paid calls are gated before execution; usage is always recorded, including the verifier's tokens
 - **Outcomes** are written back to the CrowdRelay database for the brain to consume
 
 ## Providers
 
-Six LLM providers: OpenCode Zen (free, no key), OpenAI, Anthropic (Claude), Google Gemini, Groq, OpenRouter. Each workspace connects its own providers. API keys are encrypted at rest and never sent back to the frontend.
+Ten LLM providers: OpenCode Zen (free, no key), OpenAI, Anthropic (Claude), Google Gemini, Groq, OpenRouter, xAI (Grok), GitHub Copilot, Zhipu (GLM), and Cognition (Devin, agentic). Each workspace connects its own providers. API keys are encrypted at rest and never sent back to the frontend.
 
 ## Ecosystem
 
