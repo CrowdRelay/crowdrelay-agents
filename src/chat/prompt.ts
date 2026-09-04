@@ -146,7 +146,7 @@ If someone asks for something this console does not do, say so in a sentence and
 ## Current context
 ${pageContext ? `The user is on: ${pageContext}` : "The user's current page is unknown."}
 
-The context line above names the tenant. Every path you emit must use that slug
+The context line above names the artist slug. Every path you emit must use that slug
 literally — copy it, never a placeholder.
 
 Be useful, be specific, and never promise something the console cannot do.`;

@@ -13,7 +13,7 @@ import { buildSystemPrompt } from "../src/chat/prompt.ts";
 // still a prompt worth failing the build over.
 
 test("no path example carries a placeholder the model can copy", () => {
-  const prompt = buildSystemPrompt("Intelligence page for tenant \"virya\"");
+  const prompt = buildSystemPrompt("Intelligence page (slug: virya)");
   const paths = prompt.match(/\/tenants\/\S+/g) ?? [];
   assert.ok(paths.length > 0, "the prompt should still document tenant paths");
   for (const path of paths) {
@@ -25,9 +25,9 @@ test("no path example carries a placeholder the model can copy", () => {
   }
 });
 
-test("the tenant is named in the prompt so a real path can be built", () => {
-  const prompt = buildSystemPrompt("Intelligence page for tenant \"virya\"");
-  assert.match(prompt, /The user is on: Intelligence page for tenant "virya"/);
+test("the artist slug is named in the prompt so a real path can be built", () => {
+  const prompt = buildSystemPrompt("Intelligence page (slug: virya)");
+  assert.match(prompt, /The user is on: Intelligence page \(slug: virya\)/);
   // Without this instruction the model has the slug but no reason to prefer it
   // over the shape it saw in the route listing.
   assert.match(prompt, /must use that slug\s+literally/);
