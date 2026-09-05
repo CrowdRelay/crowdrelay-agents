@@ -21,9 +21,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { extractWorkspaceId } from "../auth.js";
-import { PROVIDER_ENDPOINTS } from "../agent/endpoints.js";
 import { buildSystemPrompt } from "../chat/prompt.js";
+import { buildChatChain, fetchWithModelFallback, type ChatOpts } from "../chat/chain.js";
 import { createRateLimiter, startRateLimitSweeper } from "./rate-limit.js";
+import type { DbPool } from "../store/db.js";
 
 // Chat runs on the same free Zen quota the workers depend on (100 req/day
 // across all Zen models). Unmetered, one chat client can drain the quota the
@@ -43,77 +44,6 @@ const chatSchema = z.object({
   })).max(20).default([]),
   pageContext: z.string().max(500).optional(),
 });
-
-/**
- * The free Zen models, in the order chat tries them.
- *
- * Chat named `laguna-s-2.1-free` in two places with no fallback and no retry,
- * so one upstream hiccup ended the conversation in the provider's own words:
- *
- *   model error: 503 {"error":{"type":"server_error","message":"Error from
- *   provider (Console): Upstream request failed: Endpoint is unavailable."}}
- *
- * These are shared free endpoints on a 100 requests/day pool. Being briefly
- * unavailable is their normal behaviour, not an exception, so a single-model
- * chat was always going to fail after a few prompts. Same three models
- * `PROVIDERS` publishes for `opencode-zen`, ordered so a long conversation
- * degrades to a smaller context window rather than to nothing.
- */
-const CHAT_MODELS = [
-  "laguna-s-2.1-free",
-  "nemotron-3.5-lightning-free",
-  "mimo-v2.5-free",
-] as const;
-
-/** Upstream states worth trying a different model for. */
-function isTransientUpstream(status: number): boolean {
-  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-}
-
-/**
- * Calls the Zen endpoint, walking `CHAT_MODELS` until one answers.
- *
- * Only transient failures advance to the next model. A 400 means the request
- * itself is wrong and every model will say the same, so it returns immediately
- * rather than spending three of a shared daily quota to hear it twice more.
- */
-async function fetchWithModelFallback(
-  endpoint: string,
-  token: string | null | undefined,
-  body: Record<string, unknown>,
-  signal: AbortSignal,
-): Promise<{ response: Response; model: string } | { failure: string }> {
-  let lastFailure = "no free model was reachable";
-  for (const model of CHAT_MODELS) {
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ ...body, model }),
-        signal,
-      });
-    } catch (error) {
-      // An aborted signal is the client leaving or the timeout firing. Both
-      // mean stop, not try the next model.
-      if (signal.aborted) throw error;
-      lastFailure = `${model} did not respond`;
-      continue;
-    }
-    if (response.ok) return { response, model };
-    const detail = await response.text().catch(() => "");
-    if (!isTransientUpstream(response.status)) {
-      return {
-        failure: `${model} refused the request (HTTP ${response.status}) ${detail.slice(0, 160)}`.trim(),
-      };
-    }
-    lastFailure = `${model} was unavailable (HTTP ${response.status})`;
-  }
-  return { failure: lastFailure };
-}
 
 /**
  * What the operator reads when every free model is down.
@@ -149,6 +79,11 @@ export function registerChatRoutes(
   opts: {
     authKey: string;
     zenToken: string | null;
+    pool: DbPool;
+    encryptionKey: string;
+    previousEncryptionKey: string | null;
+    fallbackGoogleKey: string | null;
+    fallbackGroqKey: string | null;
   },
 ) {
   // --- Buffered /chat (legacy fallback) ---
@@ -174,9 +109,17 @@ export function registerChatRoutes(
       { role: "user", content: message },
     ];
 
-    const zenEndpoint = PROVIDER_ENDPOINTS["opencode-zen"];
-    if (!zenEndpoint) {
-      return reply.code(503).send({ error: "chat is not available (no free model configured)" });
+    const chatOpts: ChatOpts = {
+      zenToken: opts.zenToken,
+      pool: opts.pool,
+      encryptionKey: opts.encryptionKey,
+      previousEncryptionKey: opts.previousEncryptionKey,
+      fallbackGoogleKey: opts.fallbackGoogleKey,
+      fallbackGroqKey: opts.fallbackGroqKey,
+    };
+    const chain = await buildChatChain(chatOpts, workspaceId);
+    if (chain.length === 0) {
+      return reply.code(503).send({ error: "chat is not available (no model configured — connect a provider on the AI Integrations page)" });
     }
 
     const rateLimit = chatRateLimiter.check(workspaceId);
@@ -186,8 +129,7 @@ export function registerChatRoutes(
 
     try {
       const attempt = await fetchWithModelFallback(
-        zenEndpoint,
-        opts.zenToken,
+        chain,
         { messages, max_tokens: 2048, temperature: 0.7 },
         AbortSignal.timeout(60_000),
       );
@@ -248,9 +190,17 @@ export function registerChatRoutes(
       { role: "user", content: message },
     ];
 
-    const zenEndpoint = PROVIDER_ENDPOINTS["opencode-zen"];
-    if (!zenEndpoint) {
-      return reply.code(503).send({ error: "chat is not available (no free model configured)" });
+    const chatOpts: ChatOpts = {
+      zenToken: opts.zenToken,
+      pool: opts.pool,
+      encryptionKey: opts.encryptionKey,
+      previousEncryptionKey: opts.previousEncryptionKey,
+      fallbackGoogleKey: opts.fallbackGoogleKey,
+      fallbackGroqKey: opts.fallbackGroqKey,
+    };
+    const chain = await buildChatChain(chatOpts, workspaceId);
+    if (chain.length === 0) {
+      return reply.code(503).send({ error: "chat is not available (no model configured — connect a provider on the AI Integrations page)" });
     }
 
     const rateLimit = chatRateLimiter.check(workspaceId);
@@ -297,13 +247,12 @@ export function registerChatRoutes(
 
     try {
       const attempt = await fetchWithModelFallback(
-        zenEndpoint,
-        opts.zenToken,
+        chain,
         { messages, max_tokens: 2048, temperature: 0.7, stream: true },
         AbortSignal.any([AbortSignal.timeout(90_000), disconnected.signal]),
       );
       if ("failure" in attempt) {
-        request.log.warn({ failure: attempt.failure }, "chat: no free model answered");
+        request.log.warn({ failure: attempt.failure }, "chat: no model answered");
         send({ type: "error", error: ALL_MODELS_DOWN });
         reply.raw.end();
         return;

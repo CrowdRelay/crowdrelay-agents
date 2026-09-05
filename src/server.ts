@@ -108,10 +108,15 @@ async function main(): Promise<void> {
     authKey: config.authKey,
   });
 
-  // Chatbot route (auth required — uses free Zen models)
+  // Chatbot route (auth required — multi-provider fallback chain)
   registerChatRoutes(app, {
     authKey: config.authKey,
     zenToken: config.opencodeZenToken,
+    pool,
+    encryptionKey: config.encryptionKey,
+    previousEncryptionKey: config.previousEncryptionKey,
+    fallbackGoogleKey: config.googleApiKey,
+    fallbackGroqKey: config.groqApiKey,
   });
 
   // Workflow routes (auth required — observation of brain-dispatched runs)
