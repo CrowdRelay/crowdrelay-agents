@@ -69,9 +69,9 @@ describe("buildChatChain", () => {
     );
     const zenEntries = chain.filter((c) => c.label.startsWith("zen/"));
     assert.equal(zenEntries.length, 3);
-    assert.equal(zenEntries[0].model, "laguna-s-2.1-free");
-    assert.equal(zenEntries[1].model, "nemotron-3.5-lightning-free");
-    assert.equal(zenEntries[2].model, "mimo-v2.5-free");
+    assert.equal(zenEntries[0].model, "nemotron-3.5-lightning-free");
+    assert.equal(zenEntries[1].model, "mimo-v2.5-free");
+    assert.equal(zenEntries[2].model, "deepseek-v4-flash-free");
   });
 
   it("returns empty chain when no keys are available", async () => {

@@ -16,7 +16,7 @@ export const growthStrategistTemplate: AgentTemplate = {
   description:
     "Analyzes the band's data and produces growth insights. This is a worker, not the brain — the deterministic Rust autopilot decides what to do with these insights.",
   category: "analysis",
-  recommendedModels: ["gemini-3.6-flash", "laguna-s-2.1-free", "nemotron-3.5-lightning-free"],
+  recommendedModels: ["gemini-3.6-flash", "deepseek-v4-flash-free", "nemotron-3.5-lightning-free"],
   dataScope: [
     "get_workspace_profile",
     "fan_stats",

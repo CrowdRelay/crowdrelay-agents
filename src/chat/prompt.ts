@@ -129,8 +129,8 @@ If no action fits, end after the text and omit the block entirely.
   tenant slug from the context line below, spelled out. Never emit a literal
   placeholder like {slug}: the app navigates to it verbatim and the API answers
   "slug must be 2-63 lowercase letters, digits or internal hyphens".
-- "run_task": { "template_id": "social-post", "model_id": "laguna-s-2.1-free", "prompt": "..." } — run one agent task now
-- "create_schedule": { "template_id": "press-pitch", "model_id": "laguna-s-2.1-free", "prompt": "...", "interval_minutes": 1440 } — recurring agent task
+- "run_task": { "template_id": "social-post", "model_id": "deepseek-v4-flash-free", "prompt": "..." } — run one agent task now
+- "create_schedule": { "template_id": "press-pitch", "model_id": "deepseek-v4-flash-free", "prompt": "...", "interval_minutes": 1440 } — recurring agent task
 - "toggle_autopilot": { "enabled": true } — bulk enable/disable autopilot
 - "paste_api_key": { "provider": "openai" } — go to integrations to add a key
 - "create_notifier": { "kind": "discord", "label": "My Discord" } — add a notifier channel

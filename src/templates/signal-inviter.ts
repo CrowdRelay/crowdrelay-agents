@@ -14,7 +14,7 @@ export const signalInviterTemplate: AgentTemplate = {
   description:
     "Drafts short, personal invite messages to send to fans via Signal push notifications. Messages reference specific upcoming shows and feel exciting, not promotional.",
   category: "content",
-  recommendedModels: ["gemini-3.6-flash", "laguna-s-2.1-free", "nemotron-3.5-lightning-free"],
+  recommendedModels: ["gemini-3.6-flash", "deepseek-v4-flash-free", "nemotron-3.5-lightning-free"],
   dataScope: ["get_workspace_profile", { tool: "list_events", params: { status: "published", upcoming: true } }, "fan_stats"],
   outputKind: "signal_push",
   systemPrompt: `You draft invite messages to send to fans via Signal push notifications.

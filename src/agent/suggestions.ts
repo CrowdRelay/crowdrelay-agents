@@ -143,7 +143,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       suggestions.push({
         id: `press-${event.id}`,
         template_id: "press-pitch",
-        model_id: "laguna-s-2.1-free",
+        model_id: "deepseek-v4-flash-free",
         title: `Press pitch for "${event.title}"`,
         description: `Event is in ${daysUntil} days (${new Date(event.starts_at).toLocaleDateString()}). ${event.interested_fans} interested, ${event.paid_buyers} paid. Write a press pitch targeting media outlets.`,
         prefill_prompt: `Write a press pitch for "${event.title}" on ${new Date(event.starts_at).toLocaleDateString()}. The event has ${event.interested_fans} interested fans and ${event.paid_buyers} paid ticket buyers. Target music media, blogs and zines in the event's market.`,
@@ -156,7 +156,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       suggestions.push({
         id: `social-${event.id}`,
         template_id: "social-post",
-        model_id: "laguna-s-2.1-free",
+        model_id: "deepseek-v4-flash-free",
         title: `Social posts for "${event.title}"`,
         description: `Event is in ${daysUntil} days — last chance to push social media. Create urgency-driven posts for Instagram, Facebook, and X/Twitter.`,
         prefill_prompt: `Create urgent social media posts for "${event.title}" happening in ${daysUntil} days (${new Date(event.starts_at).toLocaleDateString()}). ${event.paid_buyers} tickets sold so far. Focus on urgency — last chance to get tickets. Include ticket link placeholder.`,
@@ -175,7 +175,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
       suggestions.push({
         id: `recap-${event.id}`,
         template_id: "social-post",
-        model_id: "laguna-s-2.1-free",
+        model_id: "deepseek-v4-flash-free",
         title: `Post-show recap for "${event.title}"`,
         description: `Event was ${daysSince} days ago with ${event.paid_buyers} paid attendees. Write a thank-you/recap post to keep engagement high.`,
         prefill_prompt: `Write a post-show recap and thank-you post for "${event.title}" that happened ${daysSince} days ago. ${event.paid_buyers} people attended. Create content that thanks attendees and keeps the momentum going — mention upcoming events if any.`,
@@ -190,7 +190,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "target-research",
       template_id: "reddit-scanner",
-      model_id: "laguna-s-2.1-free",
+      model_id: "deepseek-v4-flash-free",
       title: "Expand outreach target list",
       description: `You have ${data.outreachTargets.active} active outreach targets. Research and identify new media outlets, blogs, and zines in your market to expand your reach.`,
       prefill_prompt: `Research and suggest new outreach targets for a metal/alternative band. We currently have ${data.outreachTargets.active} targets (${data.outreachTargets.by_kind.press} press, ${data.outreachTargets.by_kind.radio} radio, ${data.outreachTargets.by_kind.playlist} playlist). Suggest specific media outlets, blogs, zines, and radio stations that cover metal/alternative music in Central/Eastern Europe (Poland, Czech Republic, Germany).`,
@@ -204,7 +204,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "audience-analysis",
       template_id: "audience-research",
-      model_id: "laguna-s-2.1-free",
+      model_id: "deepseek-v4-flash-free",
       title: "Analyze recent fan growth",
       description: `${data.fanStats.new_30d} new fans in the last 30 days (${data.fanStats.total} total). Analyze where they're coming from and suggest ways to accelerate growth.`,
       prefill_prompt: `Analyze our fan growth: ${data.fanStats.total} total fans, ${data.fanStats.active} active, ${data.fanStats.new_30d} new in the last 30 days, ${data.fanStats.new_7d} new in the last 7 days. Suggest strategies to accelerate growth and improve fan engagement based on these numbers.`,
@@ -218,7 +218,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "campaign-review",
       template_id: "campaign-analysis",
-      model_id: "laguna-s-2.1-free",
+      model_id: "deepseek-v4-flash-free",
       title: `Analyze ${data.campaigns.length} active campaign${data.campaigns.length > 1 ? "s" : ""}`,
       description: `You have ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}. Get a performance analysis with delivery rates, what's working, and what needs improvement.`,
       prefill_prompt: `Analyze our ${data.campaigns.length} active communication campaign${data.campaigns.length > 1 ? "s" : ""}: ${data.campaigns.map(c => `"${c.title}" (${c.status})`).join(", ")}. Identify what's working, what has high failure rates, and suggest specific improvements.`,
@@ -232,7 +232,7 @@ function generateSuggestions(data: TenantData): TaskSuggestion[] {
     suggestions.push({
       id: "audience-deep-research",
       template_id: "audience-research",
-      model_id: "laguna-s-2.1-free",
+      model_id: "deepseek-v4-flash-free",
       title: "Deep audience growth analysis",
       description: `${data.fanStats.new_30d} new fans in 30 days. Get a deep analysis correlating fan growth with ticket sales, merch revenue, and autopilot-tracked growth metrics.`,
       prefill_prompt: `Analyze our audience growth in depth. We have ${data.fanStats.total} total fans, ${data.fanStats.new_30d} new in the last 30 days. Correlate this with ticket sales, merch revenue, and growth metrics to find what's driving growth and what opportunities we're missing.`,

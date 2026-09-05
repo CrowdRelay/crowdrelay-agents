@@ -231,7 +231,7 @@ export const PROVIDERS: ProviderDef[] = [
     models: [
       { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free (128K)", contextWindow: 128_000, bestFor: "General tasks, balanced reasoning", paid: false },
       { id: "mimo-v2.5-free", name: "MiMo v2.5 Free (32K)", contextWindow: 32_000, bestFor: "Quick tasks, short content", paid: false },
-      { id: "laguna-s-2.1-free", name: "Laguna S 2.1 Free (128K)", contextWindow: 128_000, bestFor: "Reasoning-heavy tasks", paid: false },
+      { id: "deepseek-v4-flash-free", name: "DeepSeek v4 Flash Free (128K)", contextWindow: 128_000, bestFor: "Reasoning-heavy tasks", paid: false },
     ],
   },
   {

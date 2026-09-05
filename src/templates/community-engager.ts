@@ -13,7 +13,7 @@ export const communityEngagerTemplate: AgentTemplate = {
   description:
     "Drafts authentic community posts for Reddit and forums. NOT posted automatically — operator reviews and approves each post. Writes like a real band member, not a marketer.",
   category: "content",
-  recommendedModels: ["gemini-3.6-flash", "laguna-s-2.1-free", "nemotron-3.5-lightning-free"],
+  recommendedModels: ["gemini-3.6-flash", "deepseek-v4-flash-free", "nemotron-3.5-lightning-free"],
   dataScope: ["get_workspace_profile", { tool: "list_events", params: { status: "published", upcoming: true } }, "list_outreach_targets", "list_community_post_metrics"],
   outputKind: "social_post",
   systemPrompt: `You draft authentic community posts for Reddit.

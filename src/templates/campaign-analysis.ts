@@ -6,7 +6,7 @@ export const campaignAnalysisTemplate: AgentTemplate = {
   description:
     "Analyze communication campaign performance and suggest improvements. Uses delivery stats, fan growth, and outreach data to identify what's working and what isn't.",
   category: "analysis",
-  recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
+  recommendedModels: ["deepseek-v4-flash-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
   dataScope: ["campaign_performance", "fan_stats", "list_outreach_targets", "list_recent_action_outcomes"],
   outputKind: "campaign_insight",
   suggestedIntervalMinutes: 10080,

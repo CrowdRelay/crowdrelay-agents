@@ -14,9 +14,9 @@ import type { DbPool } from "../store/db.js";
 
 /** Free Zen models, tried first (shared 100 req/day pool). */
 const ZEN_CHAT_MODELS = [
-  "laguna-s-2.1-free",
   "nemotron-3.5-lightning-free",
   "mimo-v2.5-free",
+  "deepseek-v4-flash-free",
 ] as const;
 
 /** Free Groq models, tried after Zen fails. */
@@ -164,15 +164,18 @@ export async function buildChatChain(opts: ChatOpts, workspaceId: string): Promi
 
 /** Upstream states worth trying a different model for. */
 export function isTransientUpstream(status: number): boolean {
-  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  return status === 401 || status === 404 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
 
 /**
  * Walks the chat fallback chain until one model answers.
  *
- * Only transient failures advance to the next target. A 400 means the request
- * itself is wrong and every model will say the same, so it returns immediately
- * rather than spending quota to hear it twice more.
+ * Transient failures (including 401/404) advance to the next target. A shared
+ * endpoint like Zen can return 401 for "model not supported" — the key is
+ * valid, just the model was deprecated, so the next model in the chain is
+ * likely to work. A 400 means the request itself is wrong and every model
+ * will say the same, so it returns immediately rather than spending quota
+ * to hear it twice more.
  */
 export async function fetchWithModelFallback(
   chain: ChatTarget[],

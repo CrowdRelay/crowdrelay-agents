@@ -17,7 +17,7 @@ export const redditScannerTemplate: AgentTemplate = {
   description:
     "Finds relevant Reddit communities (subreddits) for the band's genre, region, and upcoming events. Uses live Reddit search. Outputs outreach target candidates for operator review.",
   category: "research",
-  recommendedModels: ["gemini-3.6-flash", "laguna-s-2.1-free", "nemotron-3.5-lightning-free"],
+  recommendedModels: ["gemini-3.6-flash", "deepseek-v4-flash-free", "nemotron-3.5-lightning-free"],
   dataScope: [
     "get_workspace_profile",
     "list_events",

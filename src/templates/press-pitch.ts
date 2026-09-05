@@ -6,7 +6,7 @@ export const pressPitchTemplate: AgentTemplate = {
   description:
     "Write a professional press pitch for a specific event, targeting media outlets, blogs, and zines. Uses your event data and outreach target list to craft a personalized pitch.",
   category: "content",
-  recommendedModels: ["laguna-s-2.1-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
+  recommendedModels: ["deepseek-v4-flash-free", "gemini-3.6-flash", "openai/gpt-oss-120b"],
   dataScope: [
     "get_workspace_profile",
     { tool: "list_events", params: { status: "published", upcoming: true } },
