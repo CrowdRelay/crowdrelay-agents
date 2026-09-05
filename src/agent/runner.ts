@@ -15,6 +15,7 @@ import { availablePremiumModels } from "./models.js";
 import { getDiscoveredFreeModels, type DiscoveredModel } from "./discovery.js";
 
 import { PROVIDER_ENDPOINTS } from "./endpoints.js";
+import { classifyDataQuality } from "./data-quality.js";
 
 export interface RunConfig {
   pool: DbPool;
@@ -87,23 +88,36 @@ export async function runTask(config: RunConfig): Promise<void> {
     // Guard: when every data tool returned empty arrays, the LLM has nothing
     // grounded to work with. Hallucination is the likely outcome, so fail
     // fast with a clear message rather than burning quota on a useless call.
-    const hasData = Object.values(bundle.data).some((v) => {
-      if (Array.isArray(v)) return v.length > 0;
-      if (v && typeof v === "object") return Object.keys(v).length > 0;
-      return v != null && v !== "";
-    });
-    if (!hasData) {
+    //
+    // Two distinct failure modes must not be conflated:
+    //   CONNECTOR_ERROR — the search did not actually happen successfully.
+    //     The tool returned { error: "...", results: [] }. This is an
+    //     infrastructure/data-quality failure, not a valid observation.
+    //   NO_RESULTS — the search completed and found nothing. The tool
+    //     returned { results: [] } with no error field, or an empty array.
+    //     This is a valid observation: searched, nothing found.
+    //
+    // The old `hasData` check treated both as "no data" with the same
+    // message. A connector error was indistinguishable from an empty but
+    // successful search, so the operator never learned their credentials
+    // were broken — they just saw "no tenant data available".
+    const { hasUsableData, allConnectorErrors } = classifyDataQuality(bundle.data);
+    if (!hasUsableData) {
+      const skipReason = allConnectorErrors
+        ? "CONNECTOR_ERROR: all data sources returned errors — search did not complete successfully"
+        : "NO_RESULTS: no tenant data available for this template's data scope";
+      const errorMessage = allConnectorErrors
+        ? "CONNECTOR_ERROR: all data sources returned errors. Check connector credentials and retry — cannot produce grounded outcomes from failed searches."
+        : "No tenant data available for this template's data scope. The workspace may not have events, outreach targets, or other required data yet.";
       await setTaskMetadata(pool, taskId, {
         context: {
           budget_chars: bundle.budgetChars,
           used_chars: bundle.usedChars,
           blocks: bundle.truncationReport,
         },
-        skipped: "no tenant data available for this template's data scope",
+        skipped: skipReason,
       });
-      throw new Error(
-        "No tenant data available for this template's data scope. The workspace may not have events, outreach targets, or other required data yet.",
-      );
+      throw new Error(errorMessage);
     }
 
     const outputKind = template.outputKind as OutcomeKind | undefined;
